@@ -144,7 +144,7 @@ export default function Header() {
             >
               {currentMode.name}
             </Badge>
-            <span className="text-sm font-medium">{formattedTimeLeft}</span>
+            <span className="text-sm font-medium">{mounted ? formattedTimeLeft : "--:--"}</span>
           </div>
           
           {/* 現在時刻表示 */}
@@ -152,7 +152,7 @@ export default function Header() {
             <Clock className="h-4 w-4 text-muted-foreground" />
             <span className="font-medium">{timeString}</span>
             <span className="hidden md:inline text-xs text-muted-foreground">
-              {dateString}
+              {mounted ? dateString : "--/--/--"}
             </span>
           </div>
         </div>

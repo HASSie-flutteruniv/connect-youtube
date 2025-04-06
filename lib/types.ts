@@ -12,6 +12,11 @@ export interface Author {
 export interface MessageSnippet {
   displayMessage: string;
   publishedAt: string;
+  authorDisplayName?: string;
+  authorPhotoUrl?: string;
+  authorChannelId?: {
+    value?: string;
+  };
 }
 
 export interface ChatItem {
@@ -48,6 +53,7 @@ export interface Seat {
   task?: string | null;
   enterTime?: Date | string | null;
   autoExitScheduled?: Date | string | null;
+  profileImageUrl?: string | null;
   timestamp: Date | string;
 }
 
@@ -106,6 +112,7 @@ export interface Command {
   authorId: string;
   commentId: string;
   commentText: string;
+  profileImageUrl?: string;
 }
 
 /**

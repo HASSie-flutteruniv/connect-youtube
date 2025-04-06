@@ -9,6 +9,7 @@ interface Seat {
   task?: string | null;
   enterTime?: Date | string | null;
   autoExitScheduled?: Date | string | null;
+  profileImageUrl?: string | null;
   timestamp: Date | string;
 }
 
@@ -18,6 +19,20 @@ interface FocusRoomProps {
 }
 
 export default function FocusRoom({ seats, roomId }: FocusRoomProps) {
+  // デバッグ: 受け取った座席データをログに出力
+  console.log(`[FocusRoom] Received ${seats.length} seats for room ${roomId}`);
+  
+  // プロフィール画像URLを持つ座席をログ出力
+  const seatsWithImages = seats.filter(seat => seat.profileImageUrl && seat.username);
+  if (seatsWithImages.length > 0) {
+    console.log(`[FocusRoom] Found ${seatsWithImages.length} seats with profile images:`);
+    seatsWithImages.forEach(seat => {
+      console.log(`- ${seat.username}: ${seat.profileImageUrl}`);
+    });
+  } else {
+    console.log(`[FocusRoom] No seats with profile images found`);
+  }
+  
   const [currentUserPage, setCurrentUserPage] = useState(0);
   const [userAnimationState, setUserAnimationState] = useState("idle");
   const [nextUserPageToShow, setNextUserPageToShow] = useState(1);
@@ -59,6 +74,17 @@ export default function FocusRoom({ seats, roomId }: FocusRoomProps) {
     return activeSeats.slice(startIndex, startIndex + USERS_PER_PAGE);
   };
 
+  // デバッグ: 最初のページのユーザーデータをログ出力
+  useEffect(() => {
+    const currentUsers = getCurrentPageUsers();
+    if (currentUsers.length > 0) {
+      console.log(`[FocusRoom] First page users (${currentUsers.length}):`);
+      currentUsers.forEach((user, index) => {
+        console.log(`User ${index}: ${user.username}, profileImageUrl: ${user.profileImageUrl || 'none'}`);
+      });
+    }
+  }, [activeSeats]); // activeSeatsが変わったときだけ実行
+
   return (
     <div className="bg-[#f2f2f2]/95 rounded-lg shadow-md overflow-hidden mb-4">
       <div className="p-4 flex justify-between items-center border-b border-gray-200">
@@ -91,7 +117,8 @@ export default function FocusRoom({ seats, roomId }: FocusRoomProps) {
                       id: seat.id,
                       name: seat.username || '',
                       task: seat.task,
-                      enterTime: seat.enterTime
+                      enterTime: seat.enterTime,
+                      profileImageUrl: seat.profileImageUrl
                     }} 
                   />
                 ))
@@ -102,7 +129,8 @@ export default function FocusRoom({ seats, roomId }: FocusRoomProps) {
                       id: seat.id,
                       name: seat.username || '',
                       task: seat.task,
-                      enterTime: seat.enterTime
+                      enterTime: seat.enterTime,
+                      profileImageUrl: seat.profileImageUrl
                     }} 
                   />
                 ))

@@ -5,10 +5,10 @@ import { processCommand } from '@/lib/youtube';
 interface CommandRequest {
   command: string;
   username: string;
-  videoId?: string;
-  liveChatId?: string;
-  authorId?: string;
   taskName?: string;
+  authorId?: string;
+  videoId?: string;
+  profileImageUrl?: string;
 }
 
 export const dynamic = 'force-dynamic'; 
@@ -18,42 +18,51 @@ export const dynamic = 'force-dynamic';
  * コメント取得ロジックから分離され、コマンド処理のみを担当
  */
 export async function POST(request: Request) {
-  console.log('[API] Command execution request received');
+  console.log('[Command API] Command request received');
   
   try {
-    // リクエストボディを解析
     const body: CommandRequest = await request.json();
-    const { command, username, videoId, liveChatId, authorId, taskName } = body;
+    const { command, username, taskName, authorId, videoId, profileImageUrl } = body;
     
     if (!command || !username) {
-      console.error('[API] Invalid command request: Missing required fields');
+      console.error('[Command API] Invalid request: missing required fields');
       return NextResponse.json(
-        { error: 'Missing required fields: command and username are required' },
+        { error: 'Command and username are required' },
         { status: 400 }
       );
     }
     
-    console.log(`[API] Processing command: "${command}" from user: ${username}`);
+    console.log(`[Command API] Processing command: ${command} from ${username}`);
     
-    // MongoDBに接続
+    // デバッグ用: リクエストの全内容を表示
+    console.log('[Command API] Request details:', JSON.stringify({
+      command,
+      username,
+      taskName,
+      authorId,
+      videoId,
+      hasProfileImage: !!profileImageUrl
+    }, null, 2));
+    
+    if (profileImageUrl) {
+      console.log(`[Command API] Profile image URL provided for ${username}: ${profileImageUrl}`);
+    }
+    
     const client = await clientPromise;
     const db = client.db('coworking');
     
-    // commandを処理
-    const result = await processCommand(command, username, db, videoId, liveChatId, authorId, taskName);
+    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName, profileImageUrl);
     
-    // 結果を返却
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       result,
-      message: `Command '${command}' from ${username} processed successfully` 
+      message: `${command} command executed successfully`
     });
-    
   } catch (error) {
-    console.error('[API] Error processing command:', error);
+    console.error('[Command API] Error processing command:', error);
     
     return NextResponse.json(
-      { error: 'Failed to process command', details: (error as Error).message },
+      { error: 'Failed to execute command', details: (error as Error).message },
       { status: 500 }
     );
   }

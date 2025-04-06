@@ -17,6 +17,11 @@ export interface Author {
 export interface MessageSnippet {
   displayMessage: string;
   publishedAt: string;
+  authorDisplayName?: string;
+  authorPhotoUrl?: string;
+  authorChannelId?: {
+    value?: string;
+  };
 }
 
 export interface ChatItem {
@@ -142,11 +147,27 @@ export async function sendChatMessage(liveChatId: string, message: string) {
  */
 export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
   try {
+    // API呼び出しでsnippetとauthorDetailsの両方を取得
     const response = await youtubeWithApiKey.liveChatMessages.list({
       part: ['snippet', 'authorDetails'],
       liveChatId,
       pageToken: pageToken || undefined,
+      maxResults: 100
     });
+    
+    console.log(`[YouTube API] コメント取得: ${response.data.items?.length || 0}件`);
+    
+    // デバッグのため最初のコメントの構造を出力
+    if (response.data.items && response.data.items.length > 0) {
+      const firstItem = response.data.items[0];
+      console.log('[YouTube API] コメント構造サンプル:', 
+        JSON.stringify({
+          id: firstItem.id,
+          snippet: firstItem.snippet,
+          authorDetails: firstItem.authorDetails
+        }, null, 2).substring(0, 500) + '...');
+    }
+    
     return response.data as ChatResponse;
   } catch (error: any) {
     console.error('Error getting live chat messages:', error?.response?.data || error);
@@ -164,6 +185,11 @@ export async function getLiveChatMessages(liveChatId: string, pageToken: string 
  */
 export const liveChatIdCache: Record<string, string> = {};
 
+// プロフィール画像URLを検証する関数
+function isValidImageUrl(url?: string | null): boolean {
+  return Boolean(url && typeof url === 'string' && url.startsWith('http'));
+}
+
 /**
  * YouTubeコメントを処理してコマンドとして実行する
  * @param commentText コメントテキスト
@@ -171,6 +197,7 @@ export const liveChatIdCache: Record<string, string> = {};
  * @param authorId 著者ID (YouTubeチャンネルID)
  * @param db MongoDBインスタンス
  * @param videoId ビデオID
+ * @param profileImageUrl プロフィール画像URL
  * @returns 処理結果
  */
 export async function processYouTubeComment(
@@ -178,7 +205,8 @@ export async function processYouTubeComment(
   username: string,
   authorId: string,
   db: Db,
-  videoId?: string
+  videoId?: string,
+  profileImageUrl?: string
 ) {
   console.log(`[YouTube] Processing comment from ${username}: ${commentText}`);
   // コマンドとタスク名を抽出
@@ -198,7 +226,7 @@ export async function processYouTubeComment(
 
   // コマンド処理を実行
   try {
-    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName);
+    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName, profileImageUrl);
     return { success: true, result };
   } catch (error) {
     console.error(`[YouTube] Error processing comment as command:`, error);
@@ -217,6 +245,7 @@ export async function processYouTubeComment(
  * @param liveChatId オプションのライブチャットID
  * @param authorId オプションのユーザーID（YouTubeチャンネルIDなど）
  * @param taskName オプションのタスク名（workコマンド用）
+ * @param profileImageUrl オプションのプロフィール画像URL
  * @returns 処理結果のオブジェクト
  */
 export async function processCommand(
@@ -226,10 +255,33 @@ export async function processCommand(
   videoId?: string,
   liveChatId?: string,
   authorId?: string,
-  taskName?: string
+  taskName?: string,
+  profileImageUrl?: string
 ) {
   console.log(`[Command] Processing command: ${command} from ${username}`);
+  
+  // より詳細なデバッグ情報を出力
+  console.log(`[Command] DEBUG - Command details:`, {
+    command,
+    username,
+    authorId: authorId || 'not provided',
+    taskName: taskName || 'not provided',
+    profileImageUrl: profileImageUrl || 'not provided',
+    hasValidProfileImage: isValidImageUrl(profileImageUrl)
+  });
+  
+  // プロフィール画像URLをログに記録、検証
+  if (profileImageUrl) {
+    if (isValidImageUrl(profileImageUrl)) {
+      console.log(`[Command] Valid profile image URL received: ${profileImageUrl}`);
+    } else {
+      console.warn(`[Command] Invalid profile image URL received: ${profileImageUrl}`);
+      profileImageUrl = undefined; // 無効なURLはundefinedに設定
+    }
+  }
+  
   const seatsCollection = db.collection('seats');
+  const notificationsCollection = db.collection('notifications');
   
   // ライブチャットIDが指定されていない場合で、videoIdが指定されている場合、取得を試みる
   if (!liveChatId && videoId) {
@@ -243,6 +295,22 @@ export async function processCommand(
   
   // OAuth認証が設定されているかをチェック
   const isOAuthConfigured = !!youtubeWithOAuth;
+  
+  // システムメッセージをMongoDBに保存する関数（SSEで検知される）
+  const saveSystemMessage = async (message: string, type: 'info' | 'warning' | 'error' = 'info') => {
+    try {
+      await notificationsCollection.insertOne({
+        message,
+        type,
+        timestamp: new Date(),
+        id: `${Date.now()}-${Math.random()}`, // ユニークID
+        isRead: false
+      });
+      console.log(`[Command] System message saved: ${message}`);
+    } catch (err) {
+      console.error('[Command] Failed to save system message:', err);
+    }
+  };
   
   // コマンドタイプに応じた処理
   if (command === 'work') {
@@ -263,18 +331,43 @@ export async function processCommand(
     
     if (existingSeat) {
       // 既に入室済みの場合：タスクと時間を更新
-      await seatsCollection.updateOne(
+      const updateData: Record<string, any> = { 
+        task: taskName, 
+        enterTime: enterTime, 
+        username: username, // 名前が変わっている可能性も考慮
+        authorId: authorId, // IDも更新（指定されている場合）
+        timestamp: new Date()
+      };
+      
+      // 有効なプロフィール画像URLが提供された場合のみ更新
+      if (isValidImageUrl(profileImageUrl)) {
+        updateData.profileImageUrl = profileImageUrl;
+        console.log(`[Command] Adding profile image URL to update data: ${profileImageUrl}`);
+      } else {
+        console.log(`[Command] No valid profile image URL to add to update data`);
+      }
+      
+      console.log(`[Command] Updating existing seat for ${username}:`, updateData);
+      
+      const updateResult = await seatsCollection.updateOne(
         { _id: existingSeat._id },
-        { 
-          $set: { 
-            task: taskName, 
-            enterTime: enterTime, 
-            username: username, // 名前が変わっている可能性も考慮
-            authorId: authorId, // IDも更新（指定されている場合）
-            timestamp: new Date()
-          } 
-        }
+        { $set: updateData }
       );
+      
+      console.log(`[Command] Seat update result:`, {
+        matchedCount: updateResult.matchedCount,
+        modifiedCount: updateResult.modifiedCount,
+        upsertedCount: updateResult.upsertedCount
+      });
+      
+      // 更新後の座席データを取得して確認
+      const updatedSeat = await seatsCollection.findOne({ _id: existingSeat._id });
+      console.log(`[Command] Seat after update:`, {
+        id: updatedSeat?._id.toString(),
+        username: updatedSeat?.username,
+        profileImageUrl: updatedSeat?.profileImageUrl,
+        hasProfileImage: !!updatedSeat?.profileImageUrl
+      });
       
       // 自動退室時間を設定
       await scheduleAutoExit(db, existingSeat.room_id, existingSeat.position, 2);
@@ -291,6 +384,9 @@ export async function processCommand(
         }
       }
       
+      // システムメッセージを保存（SSEで検知される）
+      await saveSystemMessage(`${username}さんが「${taskName}」に作業内容を変更しました`, 'info');
+      
       return {
         success: true,
         action: 'update',
@@ -303,21 +399,40 @@ export async function processCommand(
       };
     } else {
       // 新規入室の場合：空いている座席を探す
+      const setData: Record<string, any> = {
+        username: username,
+        authorId: authorId, // IDが指定されている場合は保存
+        task: taskName,
+        enterTime: enterTime,
+        timestamp: new Date()
+      };
+      
+      // 有効なプロフィール画像URLが提供された場合のみ設定
+      if (isValidImageUrl(profileImageUrl)) {
+        setData.profileImageUrl = profileImageUrl;
+        console.log(`[Command] Adding profile image URL to new seat data: ${profileImageUrl}`);
+      } else {
+        console.log(`[Command] No valid profile image URL to add to new seat data`);
+      }
+      
+      console.log(`[Command] Looking for an available seat with data:`, setData);
+      
       const availableSeat = await seatsCollection.findOneAndUpdate(
         { username: null }, // 空席を探す
-        { 
-          $set: {
-            username: username,
-            authorId: authorId, // IDが指定されている場合は保存
-            task: taskName,
-            enterTime: enterTime,
-            timestamp: new Date()
-          }
-        },
+        { $set: setData },
         { sort: { position: 1 }, returnDocument: 'after' } // position昇順で最初の空席を取得
       );
       
       if (availableSeat.value) {
+        console.log(`[Command] Found and updated available seat:`, {
+          id: availableSeat.value._id.toString(),
+          username: availableSeat.value.username,
+          profileImageUrl: availableSeat.value.profileImageUrl,
+          hasProfileImage: !!availableSeat.value.profileImageUrl,
+          room_id: availableSeat.value.room_id,
+          position: availableSeat.value.position
+        });
+        
         // 自動退室時間を設定
         await scheduleAutoExit(db, availableSeat.value.room_id, availableSeat.value.position, 2);
         
@@ -335,6 +450,9 @@ export async function processCommand(
             // メッセージ送信に失敗しても処理は続行
           }
         }
+        
+        // システムメッセージを保存（SSEで検知される）
+        await saveSystemMessage(`${username}さんが「${taskName}」で入室しました`, 'info');
         
         return {
           success: true,
@@ -356,7 +474,7 @@ export async function processCommand(
         const newRoomId = lastRoomSeat.length > 0 ? lastRoomSeat[0].room_id : 1;
         
         // 新しい座席を作成
-        const newSeat = {
+        const newSeat: Record<string, any> = {
           position: newPosition,
           room_id: newRoomId,
           username: username,
@@ -366,7 +484,31 @@ export async function processCommand(
           timestamp: new Date()
         };
         
+        // 有効なプロフィール画像URLが提供された場合のみ設定
+        if (isValidImageUrl(profileImageUrl)) {
+          newSeat.profileImageUrl = profileImageUrl;
+          console.log(`[Command] Adding profile image URL to new created seat: ${profileImageUrl}`);
+        } else {
+          console.log(`[Command] No valid profile image URL to add to newly created seat`);
+        }
+        
+        console.log(`[Command] Creating new seat:`, newSeat);
+        
         const insertResult = await seatsCollection.insertOne(newSeat);
+        
+        console.log(`[Command] New seat created:`, {
+          insertedId: insertResult.insertedId.toString(),
+          acknowledged: insertResult.acknowledged
+        });
+        
+        // 作成した座席のデータを取得して確認
+        const createdSeat = await seatsCollection.findOne({ _id: insertResult.insertedId });
+        console.log(`[Command] Newly created seat data:`, {
+          id: createdSeat?._id.toString(),
+          username: createdSeat?.username,
+          profileImageUrl: createdSeat?.profileImageUrl,
+          hasProfileImage: !!createdSeat?.profileImageUrl
+        });
         
         // 自動退室時間を設定
         await scheduleAutoExit(db, newRoomId, newPosition, 2);
@@ -385,6 +527,9 @@ export async function processCommand(
             // メッセージ送信に失敗しても処理は続行
           }
         }
+        
+        // システムメッセージを保存（SSEで検知される）
+        await saveSystemMessage(`${username}さんが「${taskName}」で新しい座席を作成しました`, 'info');
         
         return {
           success: true,
@@ -416,6 +561,7 @@ export async function processCommand(
             task: null, 
             enterTime: null, 
             autoExitScheduled: null,
+            profileImageUrl: null, // プロフィール画像情報もクリア
             timestamp: new Date()
           } 
         },
@@ -437,6 +583,9 @@ export async function processCommand(
             // メッセージ送信に失敗しても処理は続行
           }
         }
+        
+        // システムメッセージを保存（SSEで検知される）
+        await saveSystemMessage(`${username}さんが退室しました`, 'info');
         
         return {
           success: true,

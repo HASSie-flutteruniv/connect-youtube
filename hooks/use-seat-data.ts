@@ -8,6 +8,7 @@ export interface Seat {
   task?: string | null;
   enterTime?: Date | string | null;
   autoExitScheduled?: Date | string | null;
+  profileImageUrl?: string | null;
   timestamp: Date | string;
 }
 
@@ -51,6 +52,16 @@ export function useSeatData(): UseSeatDataResult {
   const handleMessage = useCallback((data: SSEData) => {
     if (data.rooms && Array.isArray(data.rooms)) {
       console.log(`[SeatData] Received ${data.rooms.length} rooms from SSE`);
+      
+      // デバッグ用: プロフィール画像URLを持つ座席をログ出力
+      data.rooms.forEach(room => {
+        room.seats.forEach(seat => {
+          if (seat.profileImageUrl) {
+            console.log(`[SeatData] Found seat with profileImageUrl: ${seat.username}, URL: ${seat.profileImageUrl}`);
+          }
+        });
+      });
+      
       setRooms(data.rooms);
     } else if (data.error) {
       console.error('[SeatData] Error in SSE data:', data.error);

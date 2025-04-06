@@ -44,6 +44,7 @@ export type Seat = {
   task: string | null;
   enterTime: Date | null;
   autoExitScheduled: Date | null;
+  profileImageUrl: string | null;
   timestamp: Date;
   created_at: Date;
 };

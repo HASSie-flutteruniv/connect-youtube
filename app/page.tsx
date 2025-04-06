@@ -1,25 +1,116 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import Room from "@/components/Room";
 import { Card } from "@/components/ui/card";
 import FocusRoom from "@/components/FocusRoom";
 import Header from "@/components/Header";
 import BGMPlayer from "@/components/BGMPlayer";
+import NotificationTicker, { Notification } from "@/components/NotificationTicker";
 import { toast } from "@/hooks/use-toast";
-import { useSeatData } from "@/hooks/use-seat-data";
+import { useSeatData, RoomData, Seat } from "@/hooks/use-seat-data";
+import { useSSE, SSEConnectionState } from "@/hooks/use-sse";
 import { AlertCircle, WifiOff, Loader2 } from "lucide-react";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Command } from "@/lib/types";
 
+// 通知の最大保持数
+const MAX_NOTIFICATIONS = 20;
+
+// SSEデータの型
+interface SSEData {
+  rooms: RoomData[];
+  error?: string;
+}
+
+// システムメッセージの型
+interface SystemMessagePayload {
+  message: string;
+  type: 'info' | 'warning' | 'error';
+  timestamp: string; // ISO String
+  id?: string; // バックエンドでユニークIDを付与するのが望ましい
+}
+
 export default function Home() {
-  // SSEから座席データを取得
-  const { rooms, isLoading, connectionState, refreshData } = useSeatData();
+  // 元のSSEから座席データを取得コードを無効化
+  // const { rooms, isLoading, connectionState, refreshData } = useSeatData();
+  
+  // 独自のSSE接続を使用
+  const [rooms, setRooms] = useState<RoomData[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   
   // コマンド処理の状態管理
   const [isProcessingCommand, setIsProcessingCommand] = useState(false);
   const processingCommandsRef = useRef<Set<string>>(new Set());
+
+  // お知らせメッセージ処理
+  const handleSystemMessage = useCallback((messagePayload: SystemMessagePayload) => {
+    console.log('[Page] System Message Received:', messagePayload);
+    const newNotification: Notification = {
+      // バックエンドでIDが付与されていない場合、クライアントで生成
+      id: messagePayload.id || `${Date.now()}-${Math.random()}`,
+      message: messagePayload.message,
+      timestamp: new Date(messagePayload.timestamp).getTime(),
+      type: messagePayload.type,
+    };
+
+    setNotifications(prev => {
+      // 重複チェック（同じメッセージが短時間で複数来ないように）
+      // if (prev.length > 0 && prev[0].message === newNotification.message && (Date.now() - prev[0].timestamp < 2000)) {
+      //   return prev;
+      // }
+      const updated = [newNotification, ...prev];
+      return updated.slice(0, MAX_NOTIFICATIONS); // 最大件数制限
+    });
+
+    // トースト通知も表示
+    toast({
+      title: messagePayload.type === 'error' ? 'エラー' : 
+             messagePayload.type === 'warning' ? '警告' : 'お知らせ',
+      description: messagePayload.message,
+      variant: messagePayload.type === 'error' ? 'destructive' : 'default',
+    });
+  }, []);
+
+  // 座席データメッセージ処理
+  const handleSeatDataMessage = useCallback((data: SSEData) => {
+    if (data.rooms && Array.isArray(data.rooms)) {
+      console.log(`[Page] Received ${data.rooms.length} rooms from SSE`);
+      setRooms(data.rooms);
+    } else if (data.error) {
+      console.error('[Page] Error in SSE data:', data.error);
+      // エラー通知はお知らせティッカーかトーストで表示
+      handleSystemMessage({ 
+        message: data.error, 
+        type: 'error', 
+        timestamp: new Date().toISOString()
+      });
+    }
+  }, [handleSystemMessage]);
+
+  // SSE接続フック
+  const {
+    connectionState,
+    connect: refreshData,
+  } = useSSE<SSEData>({
+    endpoint: '/api/sse',
+    onMessage: handleSeatDataMessage, // 座席データ用ハンドラ
+    onSystemMessage: handleSystemMessage, // お知らせ用ハンドラ
+    onConnect: () => {
+      console.log('[Page] SSE connection established');
+    },
+    onDisconnect: () => {
+      console.log('[Page] SSE connection closed');
+    },
+    onError: (error) => {
+      console.error('[Page] SSE connection error:', error);
+    },
+    maxRetries: 5, // 最大再試行回数
+  });
+
+  // isLoading状態の計算
+  const isLoading = connectionState === 'connecting' || connectionState === 'reconnecting';
   
   useEffect(() => {
     // YouTubeコメント取得のポーリング
@@ -70,6 +161,13 @@ export default function Home() {
       try {
         console.log(`コマンド処理: ${command.command} by ${command.authorName}`);
         
+        // プロフィール画像URLがあるかログ出力
+        if (command.profileImageUrl) {
+          console.log(`[Page] Command has profile image URL: ${command.profileImageUrl}`);
+        } else {
+          console.log(`[Page] Command has no profile image URL`);
+        }
+        
         // コマンド実行APIをコール
         const response = await fetch('/api/commands', {
           method: 'POST',
@@ -81,7 +179,8 @@ export default function Home() {
             username: command.authorName,
             authorId: command.authorId,
             videoId: command.commentId.split('_')[0], // コメントIDからビデオID部分を抽出
-            taskName: command.taskName
+            taskName: command.taskName,
+            profileImageUrl: command.profileImageUrl // プロフィール画像URLを追加
           }),
         });
         
@@ -93,6 +192,21 @@ export default function Home() {
         
         if (result.success) {
           console.log(`コマンド ${command.command} の処理成功:`, result);
+          
+          // デバッグ: データベース更新の確認
+          try {
+            console.log(`[Page] Checking database for updates after command ${command.command}...`);
+            const dbCheckResponse = await fetch('/api/debug/check-db?command=' + command.command + 
+              '&username=' + encodeURIComponent(command.authorName) + 
+              (command.profileImageUrl ? '&profileImageUrl=' + encodeURIComponent(command.profileImageUrl) : ''));
+            
+            if (dbCheckResponse.ok) {
+              const dbCheckResult = await dbCheckResponse.json();
+              console.log(`[Page] Database check result:`, dbCheckResult);
+            }
+          } catch (checkError) {
+            console.warn(`[Page] Error checking database:`, checkError);
+          }
           
           // 成功時に通知表示
           if (command.command === 'work') {
@@ -201,15 +315,18 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#505762] pt-20">
+    <main className="min-h-screen bg-[#505762] pt-16"> {/* pt-16 はヘッダー分 */}
       {/* ヘッダー */}
       <Header />
-      
-      {/* メインコンテンツ */}
-      <div className="container mx-auto px-4 py-4 pt-24">
+
+      {/* お知らせティッカー */}
+      <NotificationTicker notifications={notifications} />
+
+      {/* メインコンテンツ (pt をお知らせティッカーの高さ分追加) */}
+      <div className="container mx-auto px-4 py-4 pt-10"> {/* pt-10 = ticker height */}
         {/* 接続状態表示 */}
         {renderConnectionStatus()}
-      
+
         {/* 参加者情報 */}
         <Card className="mb-4 bg-[#f2f2f2]/95 shadow-md">
           <div className="p-4">
@@ -237,14 +354,11 @@ export default function Home() {
         {/* フォーカスルーム */}
         <div className="mb-4">
           {!isLoading && rooms.length > 0 && rooms.some(room => room.seats && room.seats.length > 0) ? (
-            // SSEから受け取ったデータを使用
-            // すべての座席を一つのフォーカスルームとして表示
-            <FocusRoom 
+            <FocusRoom
               seats={rooms.flatMap(room => room.seats || [])}
               roomId="focus-room"
             />
           ) : (
-            // データロード中の表示
             <div className="bg-[#f2f2f2]/95 rounded-lg p-8 text-center text-gray-600">
               <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin text-gray-400" />
               座席情報を読み込み中...
@@ -254,7 +368,7 @@ export default function Home() {
         
         {/* BGM */}
         <BGMPlayer />
-        
+
         {/* チャットルーム（非表示） */}
         <div className="hidden">
           {chatRooms.map(room => (

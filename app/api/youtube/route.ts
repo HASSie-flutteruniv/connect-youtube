@@ -8,6 +8,7 @@ interface YouTubeCommentRequest {
   authorId: string;
   commentId: string;
   videoId?: string;
+  profileImageUrl?: string;
 }
 
 export async function POST(request: Request) {
@@ -16,7 +17,7 @@ export async function POST(request: Request) {
   try {
     // リクエストボディを解析
     const body: YouTubeCommentRequest = await request.json();
-    const { comment, authorName, authorId, commentId, videoId } = body;
+    const { comment, authorName, authorId, commentId, videoId, profileImageUrl } = body;
     
     if (!comment || !authorName || !authorId || !commentId) {
       console.error('[YouTube API] 無効なリクエスト: 必須フィールドが不足');
@@ -27,13 +28,18 @@ export async function POST(request: Request) {
     }
     
     console.log(`[YouTube API] コメント処理: "${comment}" from ${authorName} (ID: ${authorId})`);
+    if (profileImageUrl) {
+      console.log(`[YouTube API] プロフィール画像URL: ${profileImageUrl}`);
+    } else {
+      console.log('[YouTube API] プロフィール画像URLが提供されていません');
+    }
     
     // MongoDBに接続
     const client = await clientPromise;
     const db = client.db('coworking');
     
     // コメントからコマンドを抽出して処理
-    const result = await processYouTubeComment(comment, authorName, authorId, db, videoId);
+    const result = await processYouTubeComment(comment, authorName, authorId, db, videoId, profileImageUrl);
     
     // コマンドでない場合は処理不要
     if (!result.success && result.message === 'コメントはコマンドではありません') {

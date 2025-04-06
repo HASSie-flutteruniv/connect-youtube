@@ -14,6 +14,11 @@ interface ChatItem {
   snippet?: {
     displayMessage?: string;
     publishedAt?: string;
+    authorDisplayName?: string;
+    authorPhotoUrl?: string;
+    authorChannelId?: {
+      value?: string;
+    };
   };
   authorDetails?: {
     displayName?: string;
@@ -71,8 +76,11 @@ export async function GET() {
     for (const item of chatData.items || []) {
       const commentId = item.id;
       const commentText = item.snippet?.displayMessage || '';
-      const authorName = item.authorDetails?.displayName;
-      const authorId = item.authorDetails?.channelId;
+      
+      // API構造に応じて投稿者情報を取得（snippetとauthorDetailsの両方をチェック）
+      const authorName = item.snippet?.authorDisplayName || item.authorDetails?.displayName;
+      const authorId = (item.snippet?.authorChannelId?.value) || item.authorDetails?.channelId;
+      const profileImageUrl = item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl;
       
       // 以下の条件でコメント処理をスキップ
       // 1. 投稿者情報がない
@@ -91,6 +99,7 @@ export async function GET() {
       }
       
       console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
+      console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`);
       
       // コマンド検出
       const { command, taskName } = detectCommand(commentText);
@@ -103,7 +112,8 @@ export async function GET() {
           authorName,
           authorId,
           commentId,
-          commentText
+          commentText,
+          profileImageUrl
         });
         
         console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
@@ -124,8 +134,8 @@ export async function GET() {
     // コメントデータを整形 (UI表示用)
     const comments = chatData.items?.map((item: ChatItem) => ({
       id: item.id,
-      author: item.authorDetails?.displayName || '不明なユーザー',
-      profileImageUrl: item.authorDetails?.profileImageUrl,
+      author: item.snippet?.authorDisplayName || item.authorDetails?.displayName || '不明なユーザー',
+      profileImageUrl: item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl,
       text: item.snippet?.displayMessage || '',
       publishedAt: item.snippet?.publishedAt
     })) || [];
