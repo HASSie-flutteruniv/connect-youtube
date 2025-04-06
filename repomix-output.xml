@@ -46,13 +46,20 @@ The content is organized as follows:
 .cursor/
   rules/
     project-rules.mdc
+    refactoring-rules.mdc
 app/
   api/
     check-auto-exit/
       route.ts
+    commands/
+      route.ts
+    extend-auto-exit/
+      route.ts
     seats/
       route.ts
     sse/
+      route.ts
+    youtube/
       route.ts
     youtube-comments/
       route.ts
@@ -108,7 +115,9 @@ components/
     toggle-group.tsx
     toggle.tsx
     tooltip.tsx
+  AutoExitStatus.tsx
   BGMPlayer.tsx
+  Console.tsx
   FocusRoom.tsx
   Header.tsx
   PomodoroTimer.tsx
@@ -121,39 +130,2318 @@ docs/
   command-processing.md
   implementation-plan.md
   project-requiremet.md
+  refactoring-strategy.md
   ui-implementation.md
   work-command-features.md
 hooks/
+  use-auto-exit.ts
+  use-pomodoro.ts
+  use-seat-data.ts
+  use-sse.ts
   use-toast.ts
 lib/
+  autoExit.ts
+  client-utils.ts
   messages.ts
   mongodb.ts
+  sseUtils.ts
+  store.ts
+  types.ts
   utils.ts
-  youtube.js
   youtube.ts
 scripts/
   create-indexes.ts
   init-db.ts
-  poll-youtube-chat.js
   poll-youtube-chat.ts
-  test-mongodb-cjs.js
-  test-mongodb.js
   test-mongodb.ts
-  test-youtube-api.js
   test-youtube-api.ts
 .eslintrc.json
 .gitignore
+.prettierrc
 components.json
 implementation-tasks.md
+jest.config.js
+jest.setup.js
 next.config.js
 package.json
 postcss.config.js
+refactoring-tasks.md
 tailwind.config.ts
 tsconfig.json
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path=".cursor/rules/refactoring-rules.mdc">
+---
+description: リファクタリングルール
+globs: 
+alwaysApply: false
+---
+# リファクタリングルール
+
+## リファクタリングの目的と方針
+
+このプロジェクトでは以下の目的でリファクタリングを行っています：
+
+1. 保守性の向上: コードの可読性、理解しやすさ、変更の容易さを向上
+2. 信頼性の向上: バグの減少、エラーハンドリングの強化、システム安定性の向上
+3. パフォーマンスの最適化: API応答、データベースアクセス、フロントエンド処理の効率化
+4. テスト容易性の向上: 自動テストの導入しやすさ
+5. 関心の分離: 各コンポーネントやモジュールの責務の明確化
+
+## リファクタリング完了した項目
+
+### フェーズ0: 基盤整備
+
+- テストフレームワーク導入: Jest / React Testing Libraryを導入済み
+- コード整形: ESLint / Prettier の設定を追加
+- TypeScript移行: JavaScriptファイルからTypeScriptへの変換済み
+
+## コーディング規約
+
+リファクタリング作業では以下の規約に従ってください：
+
+### 1. 型定義
+
+- インターフェースやタイプエイリアスで適切な型定義を行う
+- `any`型の使用を避け、具体的な型を指定する
+- 関数のパラメータと戻り値に型アノテーションを付ける
+
+```typescript
+// 良い例
+interface UserData {
+  id: string;
+  name: string;
+  age?: number;
+}
+
+function getUser(id: string): Promise<UserData | null> {
+  // ...
+}
+
+// 避けるべき例
+function getUser(id): Promise<any> {
+  // ...
+}
+```
+
+### 2. エラーハンドリング
+
+- try-catch ブロックで適切にエラーをキャッチする
+- エラーメッセージは具体的に記述する
+- エラーオブジェクトをそのままスローするのではなく、コンテキスト情報を付加する
+
+```typescript
+// 良い例
+try {
+  await doSomething();
+} catch (error: unknown) {
+  console.error('操作中にエラーが発生しました:', error);
+  throw new CustomError(`操作に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+// 避けるべき例
+try {
+  await doSomething();
+} catch (error) {
+  console.error(error);
+  throw error;
+}
+```
+
+### 3. 非同期処理
+
+- async/await を一貫して使用する
+- Promiseチェーンよりもasync/awaitを優先する
+- エラーハンドリングを確実に行う
+
+```typescript
+// 良い例
+async function fetchData() {
+  try {
+    const response = await fetch('/api/data');
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('データ取得エラー:', error);
+    throw error;
+  }
+}
+
+// 避けるべき例
+function fetchData() {
+  return fetch('/api/data')
+    .then(response => response.json())
+    .then(data => data);
+}
+```
+
+### 4. コンポーネント設計
+
+- 単一責任の原則に従う
+- 副作用はuseEffectフック内に閉じ込める
+- コンポーネントのpropsに型定義を行う
+- リアクティブな値に依存する関数はuseMemoまたはuseCallbackでメモ化する
+
+```tsx
+// 良い例
+interface UserCardProps {
+  username: string;
+  task?: string;
+  onExit?: () => void;
+}
+
+function UserCard({ username, task, onExit }: UserCardProps) {
+  return (
+    <div className="card">
+      <h3>{username}</h3>
+      {task && <p>{task}</p>}
+      {onExit && <button onClick={onExit}>退室</button>}
+    </div>
+  );
+}
+
+// 避けるべき例
+function UserCard(props) {
+  return (
+    <div className="card">
+      <h3>{props.username}</h3>
+      {props.task && <p>{props.task}</p>}
+      {props.onExit && <button onClick={props.onExit}>退室</button>}
+    </div>
+  );
+}
+```
+
+## 設計方針
+
+### 1. 関心の分離
+
+- API エンドポイントは単一の責任を持つ
+- データ取得と処理は分離する
+- UI コンポーネントはビジネスロジックを含まない
+
+### 2. 状態管理
+
+- ローカルステートはuseStateで管理
+- 複数コンポーネント間の共有状態はReact Context APIやZustandで管理
+- フォーム状態はReact Hook Formで管理
+
+### 3. リアルタイム処理
+
+- サーバからのプッシュ通知はSSEで処理
+- クライアント側のストリーム購読は一か所に集約
+- エラー時の再接続ロジックを実装
+</file>
+
+<file path="app/api/commands/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+import { processCommand } from '@/lib/youtube';
+
+interface CommandRequest {
+  command: string;
+  username: string;
+  videoId?: string;
+  liveChatId?: string;
+}
+
+/**
+ * YouTube コマンド実行APIエンドポイント
+ * コメント取得ロジックから分離され、コマンド処理のみを担当
+ */
+export async function POST(request: Request) {
+  console.log('[API] Command execution request received');
+  
+  try {
+    // リクエストボディを解析
+    const body: CommandRequest = await request.json();
+    const { command, username, videoId, liveChatId } = body;
+    
+    if (!command || !username) {
+      console.error('[API] Invalid command request: Missing required fields');
+      return NextResponse.json(
+        { error: 'Missing required fields: command and username are required' },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`[API] Processing command: "${command}" from user: ${username}`);
+    
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // commandを処理
+    const result = await processCommand(command, username, db, videoId, liveChatId);
+    
+    // 結果を返却
+    return NextResponse.json({ 
+      success: true, 
+      result,
+      message: `Command '${command}' from ${username} processed successfully` 
+    });
+    
+  } catch (error) {
+    console.error('[API] Error processing command:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to process command', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/extend-auto-exit/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+
+interface ExtendRequest {
+  roomId: string;
+  position: number;
+  hours?: number;
+}
+
+/**
+ * 指定された部屋・位置のユーザーの自動退室時間を延長する
+ */
+export async function POST(request: Request) {
+  try {
+    // リクエストボディを解析
+    const body: ExtendRequest = await request.json();
+    const { roomId, position, hours = 2 } = body;
+    
+    if (!roomId || position === undefined) {
+      return NextResponse.json(
+        { success: false, error: '部屋IDと座席位置が必要です' },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`[API] 自動退室時間延長: 部屋${roomId}、座席${position}を${hours}時間延長`);
+    
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    const seatsCollection = db.collection('seats');
+    
+    // 座席情報を取得
+    const seat = await seatsCollection.findOne({
+      room_id: roomId,
+      position: position
+    });
+    
+    if (!seat || !seat.username) {
+      return NextResponse.json(
+        { success: false, error: '指定された座席が見つからないか、ユーザーが着席していません' },
+        { status: 404 }
+      );
+    }
+    
+    // 入室時間から自動退室時間を計算
+    const now = new Date();
+    const autoExitTime = new Date(now);
+    autoExitTime.setHours(autoExitTime.getHours() + hours);
+    
+    // 自動退室時間を更新
+    await seatsCollection.updateOne(
+      { _id: seat._id },
+      { $set: { autoExitScheduled: autoExitTime } }
+    );
+    
+    console.log(`[API] ${seat.username}の自動退室を${autoExitTime.toISOString()}に延長しました`);
+    
+    return NextResponse.json({
+      success: true,
+      message: '自動退室時間を延長しました',
+      username: seat.username,
+      newTime: autoExitTime.toISOString(),
+      formattedTime: autoExitTime.toLocaleString()
+    });
+    
+  } catch (error) {
+    console.error('[API] 自動退室時間延長中にエラーが発生:', error);
+    
+    return NextResponse.json(
+      { success: false, error: '自動退室時間の延長に失敗しました', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/youtube/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+import { processYouTubeComment } from '@/lib/youtube';
+
+interface YouTubeCommentRequest {
+  comment: string;
+  authorName: string;
+  authorId: string;
+  commentId: string;
+  videoId?: string;
+}
+
+export async function POST(request: Request) {
+  console.log('[YouTube API] コメントリクエスト受信');
+  
+  try {
+    // リクエストボディを解析
+    const body: YouTubeCommentRequest = await request.json();
+    const { comment, authorName, authorId, commentId, videoId } = body;
+    
+    if (!comment || !authorName || !authorId || !commentId) {
+      console.error('[YouTube API] 無効なリクエスト: 必須フィールドが不足');
+      return NextResponse.json(
+        { error: '必須フィールドが不足しています: comment, authorName, authorId, commentId が必要です' },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`[YouTube API] コメント処理: "${comment}" from ${authorName} (ID: ${authorId})`);
+    
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // コメントからコマンドを抽出して処理
+    const result = await processYouTubeComment(comment, authorName, authorId, db, videoId);
+    
+    // コマンドでない場合は処理不要
+    if (!result.success && result.message === 'コメントはコマンドではありません') {
+      console.log('[YouTube API] コメントはコマンドではないため、処理をスキップします');
+      return NextResponse.json({ 
+        success: false, 
+        ignored: true,
+        message: 'コメントはコマンドではないため、処理されませんでした' 
+      });
+    }
+    
+    // エラーが発生した場合
+    if (!result.success) {
+      console.error('[YouTube API] コマンド処理エラー:', result.error);
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: result.error || 'コマンド処理に失敗しました' 
+        },
+        { status: 500 }
+      );
+    }
+    
+    // 成功レスポンス
+    return NextResponse.json({ 
+      success: true, 
+      result: result.result,
+      message: `コメント: "${comment}" からのコマンドを正常に処理しました` 
+    });
+    
+  } catch (error) {
+    console.error('[YouTube API] リクエスト処理エラー:', error);
+    
+    return NextResponse.json(
+      { error: 'コメント処理に失敗しました', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="components/AutoExitStatus.tsx">
+import { useState } from 'react';
+import { useAutoExit } from '@/hooks/use-auto-exit';
+import { Clock, AlertCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { toast } from '@/hooks/use-toast';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { formatCurrentDateTime } from '@/lib/client-utils';
+
+interface AutoExitStatusProps {
+  scheduledTime: string | null | undefined;
+  seatId?: string;
+  roomId?: string;
+  position?: number;
+  isCompact?: boolean;
+  className?: string;
+}
+
+/**
+ * 自動退室状態を表示するコンポーネント
+ */
+export default function AutoExitStatus({
+  scheduledTime,
+  seatId,
+  roomId,
+  position,
+  isCompact = false,
+  className = '',
+}: AutoExitStatusProps) {
+  const { status } = useAutoExit(scheduledTime);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // 自動退室時間を延長する関数
+  const extendAutoExit = async () => {
+    if (!roomId || position === undefined) {
+      toast({
+        title: 'エラー',
+        description: '座席情報が不完全です',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setIsUpdating(true);
+      const response = await fetch('/api/extend-auto-exit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          roomId,
+          position,
+          hours: 2, // 追加で2時間延長
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('自動退室時間の延長に失敗しました');
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        toast({
+          title: '自動退室時間を延長しました',
+          description: `新しい退室時間: ${formatCurrentDateTime()}`,
+        });
+      } else {
+        throw new Error(data.error || '自動退室時間の延長に失敗しました');
+      }
+    } catch (error) {
+      console.error('自動退室延長エラー:', error);
+      toast({
+        title: 'エラー',
+        description: error instanceof Error ? error.message : '不明なエラーが発生しました',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // 自動退室が設定されていない場合
+  if (!status.isScheduled) {
+    return null;
+  }
+
+  // コンパクト表示モード（アイコンと時間のみ）
+  if (isCompact) {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className={`flex items-center text-xs text-gray-500 ${className}`}>
+              <Clock className="h-3 w-3 mr-1" />
+              <span>{status.formattedTime}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>自動退室まで: {status.formattedTime}</p>
+            {status.scheduledTime && (
+              <p className="text-xs">
+                退室予定時刻: {status.scheduledTime.toLocaleString()}
+              </p>
+            )}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
+  // 残り時間が少ない場合の警告表示
+  const isWarning = status.remainingTime !== null && status.remainingTime <= 10 * 60 * 1000; // 10分以下
+  const isDanger = status.remainingTime !== null && status.remainingTime <= 5 * 60 * 1000;   // 5分以下
+  
+  return (
+    <div className={`bg-gray-50 p-3 rounded-md border ${isWarning ? 'border-amber-300' : 'border-gray-200'} ${className}`}>
+      <div className="flex items-start justify-between">
+        <div className="flex items-center">
+          {isDanger ? (
+            <AlertCircle className="h-4 w-4 text-red-500 mr-2" />
+          ) : isWarning ? (
+            <AlertCircle className="h-4 w-4 text-amber-500 mr-2" />
+          ) : (
+            <Clock className="h-4 w-4 text-blue-500 mr-2" />
+          )}
+          <div>
+            <h4 className={`text-sm font-medium ${isDanger ? 'text-red-700' : isWarning ? 'text-amber-700' : 'text-gray-700'}`}>
+              自動退室まで
+            </h4>
+            <p className={`text-lg font-bold ${isDanger ? 'text-red-600' : isWarning ? 'text-amber-600' : 'text-blue-600'}`}>
+              {status.formattedTime}
+            </p>
+            {status.scheduledTime && (
+              <p className="text-xs text-gray-500 mt-1">
+                退室予定時刻: {status.scheduledTime.toLocaleString()}
+              </p>
+            )}
+          </div>
+        </div>
+        
+        {roomId && position !== undefined && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={extendAutoExit}
+            disabled={isUpdating}
+            className="ml-2"
+          >
+            {isUpdating ? '更新中...' : '時間延長'}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/Console.tsx">
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
+import { Play, Pause, RotateCcw } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { usePomodoro } from "@/hooks/use-pomodoro";
+
+export default function Console() {
+  const [mounted, setMounted] = useState(false);
+  const [initialized, setInitialized] = useState(false);
+  const { toast } = useToast();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  // ポモドーロタイマーの状態とアクション
+  const {
+    mode,
+    formattedTimeLeft,
+    isActive,
+    progress,
+    currentMode,
+    workSessionsCompleted,
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    switchMode
+  } = usePomodoro();
+
+  // コンソールメッセージ
+  const [messages, setMessages] = useState<Array<{ 
+    type: string; 
+    content: string; 
+    timestamp: string;
+  }>>([
+    { 
+      type: 'system', 
+      content: 'システムを初期化中...',
+      timestamp: new Date().toISOString()
+    }
+  ]);
+
+  useEffect(() => {
+    // マウント状態を設定
+    setMounted(true);
+    
+    // 初期化メッセージを追加
+    setTimeout(() => {
+      addMessage('system', 'CONNECTシステムへようこそ。');
+      setInitialized(true);
+      
+      // ポモドーロの状態に応じたメッセージを表示
+      if (isActive) {
+        addMessage('timer', `ポモドーロタイマー実行中：${currentMode.name}モード（${formattedTimeLeft}）`);
+      } else {
+        addMessage('timer', `ポモドーロタイマー待機中：${currentMode.name}モードで開始する準備ができています。`);
+      }
+    }, 1500);
+  }, []);
+
+  // タイマーの状態が変わったときのメッセージ
+  useEffect(() => {
+    if (!mounted || !initialized) return;
+    
+    if (mode === 'WORK') {
+      addMessage('timer', '作業モードに切り替わりました。集中して取り組みましょう。');
+    } else if (mode === 'BREAK') {
+      addMessage('timer', '休憩モードに切り替わりました。短い休憩で気分転換しましょう。');
+    } else if (mode === 'LONG_BREAK') {
+      addMessage('timer', '長い休憩モードに切り替わりました。十分に休息をとりましょう。');
+    }
+  }, [mode, mounted, initialized]);
+
+  // メッセージ追加関数
+  const addMessage = (type: string, content: string) => {
+    setMessages(prev => [
+      ...prev, 
+      { 
+        type, 
+        content, 
+        timestamp: new Date().toISOString() 
+      }
+    ]);
+    
+    // 自動スクロール
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
+  // タイマーコントロール関数
+  const handleTimerControl = () => {
+    if (isActive) {
+      pauseTimer();
+      addMessage('timer', 'ポモドーロタイマーを一時停止しました。');
+    } else {
+      startTimer();
+      addMessage('timer', `ポモドーロタイマーを開始しました：${currentMode.name}モード（${formattedTimeLeft}）`);
+    }
+  };
+
+  // タイマーリセット関数
+  const handleTimerReset = () => {
+    resetTimer();
+    addMessage('timer', 'ポモドーロタイマーをリセットしました。');
+  };
+
+  // モード切替関数
+  const handleModeSwitch = (newMode: 'WORK' | 'BREAK' | 'LONG_BREAK') => {
+    switchMode(newMode);
+    addMessage('timer', `タイマーモードを${newMode === 'WORK' ? '作業' : newMode === 'BREAK' ? '休憩' : '長い休憩'}に切り替えました。`);
+  };
+
+  return (
+    <div className="w-full h-full flex flex-col">
+      {/* タイマーコントロール */}
+      <div className="border-b p-4 flex items-center justify-between bg-background/80 backdrop-blur-sm">
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <div className={`${currentMode.bgColor} w-3 h-3 rounded-full`}></div>
+            <h3 className="font-medium">
+              {currentMode.name}モード：{formattedTimeLeft}
+            </h3>
+            {workSessionsCompleted > 0 && (
+              <span className="text-xs text-muted-foreground">
+                完了セッション：{workSessionsCompleted}
+              </span>
+            )}
+          </div>
+          <Progress
+            value={progress}
+            className={`h-1.5 mt-2 ${currentMode.bgColor}`}
+          />
+        </div>
+        <div className="flex gap-2 ml-4">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={handleTimerControl}
+            title={isActive ? "一時停止" : "開始"}
+          >
+            {isActive ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={handleTimerReset}
+            title="リセット"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      {/* コンソール出力エリア */}
+      <div className="flex-1 overflow-y-auto p-4 bg-background/40 font-mono text-sm">
+        {!mounted ? (
+          <>
+            <Skeleton className="h-4 w-3/4 mb-2" />
+            <Skeleton className="h-4 w-1/2 mb-2" />
+            <Skeleton className="h-4 w-2/3" />
+          </>
+        ) : (
+          <>
+            {messages.map((msg, index) => (
+              <div 
+                key={index} 
+                className={`mb-2 ${
+                  msg.type === 'error' ? 'text-red-500' : 
+                  msg.type === 'system' ? 'text-blue-500' : 
+                  msg.type === 'timer' ? 'text-green-500' : 
+                  'text-foreground'
+                }`}
+              >
+                <span className="opacity-70">
+                  [{new Date(msg.timestamp).toLocaleTimeString()}]
+                </span>{' '}
+                {msg.content}
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="hooks/use-auto-exit.ts">
+import { useState, useEffect, useCallback } from 'react';
+import { AutoExitStatus } from '@/lib/types';
+import { getAutoExitStatus, formatRemainingTime } from '@/lib/client-utils';
+
+/**
+ * 自動退室ステータスをリアルタイムで管理するカスタムフック
+ * @param scheduledTimeISOString ISO8601形式の自動退室予定時間 (nullの場合は退室予定なし)
+ * @param refreshInterval 更新間隔（ミリ秒）
+ * @returns 自動退室状態と更新関数
+ */
+export function useAutoExit(
+  scheduledTimeISOString: string | null | undefined,
+  refreshInterval: number = 1000
+): {
+  status: AutoExitStatus;
+  updateScheduledTime: (newTime: Date | string | null) => void;
+} {
+  // 自動退室状態を管理するステート
+  const [status, setStatus] = useState<AutoExitStatus>(() => 
+    getAutoExitStatus(scheduledTimeISOString || null)
+  );
+  
+  // 自動退室時間を更新する関数
+  const updateScheduledTime = useCallback((newTime: Date | string | null) => {
+    setStatus(getAutoExitStatus(newTime));
+  }, []);
+  
+  // propsが変更された場合にステータスを更新
+  useEffect(() => {
+    updateScheduledTime(scheduledTimeISOString || null);
+  }, [scheduledTimeISOString, updateScheduledTime]);
+  
+  // 定期的に残り時間を更新
+  useEffect(() => {
+    // 自動退室予定がない場合はタイマーを設定しない
+    if (!status.isScheduled || !status.scheduledTime) {
+      return;
+    }
+    
+    const updateRemainingTime = () => {
+      setStatus(prevStatus => {
+        if (!prevStatus.scheduledTime) return prevStatus;
+        
+        const now = new Date();
+        const scheduledTime = prevStatus.scheduledTime;
+        const remainingMs = scheduledTime.getTime() - now.getTime();
+        
+        // 残り時間がない場合 (期限切れ)
+        if (remainingMs <= 0) {
+          return {
+            ...prevStatus,
+            remainingTime: 0,
+            formattedTime: '時間切れ'
+          };
+        }
+        
+        // 残り時間を更新
+        return {
+          ...prevStatus,
+          remainingTime: remainingMs,
+          formattedTime: formatRemainingTime(remainingMs)
+        };
+      });
+    };
+    
+    // 初回更新
+    updateRemainingTime();
+    
+    // 定期的に更新するタイマーを設定
+    const intervalId = setInterval(updateRemainingTime, refreshInterval);
+    
+    // クリーンアップ
+    return () => clearInterval(intervalId);
+  }, [status.isScheduled, status.scheduledTime, refreshInterval]);
+  
+  return {
+    status,
+    updateScheduledTime
+  };
+}
+</file>
+
+<file path="hooks/use-pomodoro.ts">
+import { useEffect, useCallback } from 'react';
+import { formatTime, usePomodoroStore, POMODORO_MODES, TimerMode } from '@/lib/store';
+
+/**
+ * ポモドーロタイマーを使用するためのカスタムフック
+ * コンポーネントでタイマー状態を簡単に使えるようにラップ
+ */
+export const usePomodoro = () => {
+  // Zustandストアから状態と操作を取得
+  const {
+    mode,
+    timeLeft,
+    isActive,
+    progress,
+    workSessionsCompleted,
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    switchMode,
+    updateFromCurrentTime,
+    tickTimer
+  } = usePomodoroStore();
+
+  // タイマーのティック処理（1秒ごとに実行）
+  useEffect(() => {
+    // サーバーサイドレンダリングではタイマーを実行しない
+    if (typeof window === 'undefined') return;
+
+    // ブラウザ環境でのみタイマーを設定
+    const timerInterval = setInterval(() => {
+      // 2秒に1回、現在時刻ベースの更新も確認
+      if (Date.now() % 4000 < 2000) {
+        updateFromCurrentTime();
+      }
+      
+      // 毎秒タイマーをティック
+      tickTimer();
+    }, 1000);
+
+    // コンポーネントのクリーンアップ時にタイマーを解除
+    return () => clearInterval(timerInterval);
+  }, [tickTimer, updateFromCurrentTime]);
+
+  // フォーマット済みの残り時間
+  const formattedTimeLeft = formatTime(timeLeft);
+
+  // 現在のモード設定
+  const currentMode = {
+    WORK: {
+      name: '作業',
+      color: 'bg-green-500', 
+      bgColor: 'bg-green-500', // UIコンポーネント用
+      textColor: 'text-green-500'
+    },
+    BREAK: {
+      name: '休憩',
+      color: 'bg-blue-500',
+      bgColor: 'bg-blue-500', // UIコンポーネント用
+      textColor: 'text-blue-500'
+    },
+    LONG_BREAK: {
+      name: '長い休憩',
+      color: 'bg-indigo-500',
+      bgColor: 'bg-indigo-500', // UIコンポーネント用
+      textColor: 'text-indigo-500'
+    }
+  }[mode];
+
+  // モード切り替えのハンドラー（メモ化して再レンダリングを減らす）
+  const handleSwitchMode = useCallback((newMode: TimerMode) => {
+    switchMode(newMode);
+  }, [switchMode]);
+
+  // 公開するインターフェース
+  return {
+    // 状態
+    mode,
+    timeLeft,
+    formattedTimeLeft,
+    isActive,
+    progress,
+    workSessionsCompleted,
+    currentMode,
+    
+    // アクション
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    switchMode: handleSwitchMode
+  };
+};
+</file>
+
+<file path="hooks/use-seat-data.ts">
+import { useState, useCallback } from 'react';
+import { useSSE, SSEConnectionState } from './use-sse';
+import { toast } from './use-toast';
+
+export interface Seat {
+  id: string;
+  username: string | null;
+  task?: string | null;
+  enterTime?: Date | string | null;
+  autoExitScheduled?: Date | string | null;
+  timestamp: Date | string;
+}
+
+export interface RoomData {
+  id: string;
+  seats: Seat[];
+  type?: 'focus' | 'chat';
+}
+
+interface SSEData {
+  rooms: RoomData[];
+  error?: string;
+}
+
+interface UseSeatDataResult {
+  rooms: RoomData[];
+  isLoading: boolean;
+  connectionState: SSEConnectionState;
+  refreshData: () => void;
+}
+
+/**
+ * 座席データ管理のためのカスタムフック
+ * SSE接続とデータ処理を行う
+ */
+export function useSeatData(): UseSeatDataResult {
+  const [rooms, setRooms] = useState<RoomData[]>([]);
+
+  // システムメッセージを処理するコールバック
+  const handleSystemMessage = useCallback((message: { message: string; type: 'info' | 'warning' | 'error' }) => {
+    // トースト通知を表示
+    toast({
+      title: message.type === 'error' ? 'エラー' : 
+             message.type === 'warning' ? '警告' : 'お知らせ',
+      description: message.message,
+      variant: message.type === 'error' ? 'destructive' : 'default',
+    });
+  }, []);
+
+  // SSEデータを処理するコールバック
+  const handleMessage = useCallback((data: SSEData) => {
+    if (data.rooms && Array.isArray(data.rooms)) {
+      console.log(`[SeatData] Received ${data.rooms.length} rooms from SSE`);
+      setRooms(data.rooms);
+    } else if (data.error) {
+      console.error('[SeatData] Error in SSE data:', data.error);
+      toast({
+        title: 'データ取得エラー',
+        description: data.error,
+        variant: 'destructive',
+      });
+    }
+  }, []);
+
+  // SSE接続を使用してデータを取得
+  const { 
+    data,
+    connectionState,
+    connect: refreshData
+  } = useSSE<SSEData>({
+    endpoint: '/api/sse',
+    onMessage: handleMessage,
+    onSystemMessage: handleSystemMessage,
+    onConnect: () => {
+      console.log('[SeatData] SSE connection established');
+    },
+    onDisconnect: () => {
+      console.log('[SeatData] SSE connection closed');
+    },
+    onError: (error) => {
+      console.error('[SeatData] SSE connection error:', error);
+    },
+    maxRetries: 5, // 最大再試行回数
+    initialBackoffDelay: 2000, // 初期バックオフ（2秒）
+    maxBackoffDelay: 30000, // 最大バックオフ（30秒）
+  });
+
+  // 接続状態からローディング状態を判断
+  const isLoading = 
+    connectionState === 'connecting' || 
+    connectionState === 'reconnecting' || 
+    (connectionState === 'connected' && !data);
+
+  return {
+    rooms,
+    isLoading,
+    connectionState,
+    refreshData
+  };
+}
+</file>
+
+<file path="hooks/use-sse.ts">
+import { useState, useEffect, useRef, useCallback } from 'react';
+
+export type SSEConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
+
+interface SystemMessage {
+  message: string;
+  type: 'info' | 'warning' | 'error';
+  timestamp: string;
+}
+
+interface SSEHookOptions {
+  endpoint: string;
+  onSystemMessage?: (message: SystemMessage) => void;
+  onMessage?: (data: any) => void;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onError?: (error: Event) => void;
+  maxRetries?: number;
+  initialBackoffDelay?: number;
+  maxBackoffDelay?: number;
+}
+
+interface SSEHookResult<T> {
+  data: T | null;
+  connectionState: SSEConnectionState;
+  lastSystemMessage: SystemMessage | null;
+  connect: () => void;
+  disconnect: () => void;
+  isReconnecting: boolean;
+  retryCount: number;
+}
+
+/**
+ * Server-Sent Events (SSE) のカスタムフック
+ * 指数バックオフによる再接続ロジックとエラーハンドリングを実装
+ */
+export function useSSE<T = any>(options: SSEHookOptions): SSEHookResult<T> {
+  const {
+    endpoint,
+    onSystemMessage,
+    onMessage,
+    onConnect,
+    onDisconnect,
+    onError,
+    maxRetries = 10,
+    initialBackoffDelay = 1000,
+    maxBackoffDelay = 60000,
+  } = options;
+
+  const [data, setData] = useState<T | null>(null);
+  const [connectionState, setConnectionState] = useState<SSEConnectionState>('connecting');
+  const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  /**
+   * 指数バックオフの待機時間を計算
+   */
+  const calculateBackoff = useCallback((retry: number) => {
+    // 2のべき乗で待機時間を増やし、最大値でキャップ
+    const exponentialDelay = Math.min(
+      maxBackoffDelay,
+      initialBackoffDelay * Math.pow(2, retry) * (1 + Math.random() * 0.2) // ジッターを加える
+    );
+    return Math.round(exponentialDelay);
+  }, [initialBackoffDelay, maxBackoffDelay]);
+
+  /**
+   * SSE接続を開始
+   */
+  const connect = useCallback(() => {
+    // 既存の接続があれば閉じる
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    // 接続中の状態に更新
+    setConnectionState(isReconnecting ? 'reconnecting' : 'connecting');
+
+    try {
+      const eventSource = new EventSource(endpoint);
+      eventSourceRef.current = eventSource;
+
+      // 接続時のハンドラ
+      eventSource.onopen = () => {
+        console.log('[SSE:Hook] Connection established');
+        setConnectionState('connected');
+        setIsReconnecting(false);
+        setRetryCount(0);
+        onConnect?.();
+      };
+
+      // 通常メッセージのハンドラ
+      eventSource.onmessage = (event) => {
+        try {
+          const parsedData = JSON.parse(event.data);
+          setData(parsedData);
+          onMessage?.(parsedData);
+        } catch (err) {
+          console.error('[SSE:Hook] Error parsing SSE data:', err, event.data);
+        }
+      };
+
+      // システムメッセージのハンドラ
+      eventSource.addEventListener('system-message', (event: MessageEvent) => {
+        try {
+          const systemMessage = JSON.parse(event.data) as SystemMessage;
+          setLastSystemMessage(systemMessage);
+          onSystemMessage?.(systemMessage);
+          
+          console.log(`[SSE:Hook] System message received: ${systemMessage.message} (${systemMessage.type})`);
+        } catch (err) {
+          console.error('[SSE:Hook] Error parsing system message:', err, event.data);
+        }
+      });
+
+      // エラーハンドラ
+      eventSource.onerror = (error) => {
+        console.error('[SSE:Hook] Connection error:', error);
+        
+        // 接続が切れた場合
+        if (eventSource.readyState === EventSource.CLOSED) {
+          setConnectionState('disconnected');
+          onDisconnect?.();
+          
+          // 最大再試行回数を超えていない場合は再接続を試みる
+          if (retryCount < maxRetries) {
+            const nextRetryCount = retryCount + 1;
+            setRetryCount(nextRetryCount);
+            setIsReconnecting(true);
+            
+            const delayMs = calculateBackoff(nextRetryCount);
+            console.log(`[SSE:Hook] Will attempt to reconnect in ${delayMs}ms (retry ${nextRetryCount}/${maxRetries})`);
+            
+            // 指定時間後に再接続
+            reconnectTimeoutRef.current = setTimeout(() => {
+              if (eventSourceRef.current?.readyState === EventSource.CLOSED) {
+                console.log(`[SSE:Hook] Attempting to reconnect (retry ${nextRetryCount}/${maxRetries})`);
+                connect();
+              }
+            }, delayMs);
+          } else {
+            console.error(`[SSE:Hook] Maximum reconnection attempts (${maxRetries}) reached`);
+            setConnectionState('error');
+          }
+        }
+        
+        onError?.(error);
+      };
+    } catch (err) {
+      console.error('[SSE:Hook] Failed to create EventSource:', err);
+      setConnectionState('error');
+    }
+  }, [
+    endpoint, 
+    isReconnecting, 
+    retryCount, 
+    maxRetries, 
+    calculateBackoff, 
+    onConnect, 
+    onMessage, 
+    onSystemMessage,
+    onDisconnect,
+    onError
+  ]);
+
+  /**
+   * SSE接続を閉じる
+   */
+  const disconnect = useCallback(() => {
+    if (eventSourceRef.current) {
+      console.log('[SSE:Hook] Closing connection');
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    setConnectionState('disconnected');
+    onDisconnect?.();
+  }, [onDisconnect]);
+
+  // コンポーネントマウント時にSSE接続を開始
+  useEffect(() => {
+    connect();
+
+    // クリーンアップ時に接続を閉じる
+    return () => {
+      disconnect();
+    };
+  }, [endpoint]);
+
+  return {
+    data,
+    connectionState,
+    lastSystemMessage,
+    connect,
+    disconnect,
+    isReconnecting,
+    retryCount
+  };
+}
+</file>
+
+<file path="lib/autoExit.ts">
+import { Db, ObjectId } from 'mongodb';
+import { sendChatMessage, getLiveChatId } from '@/lib/youtube';
+import { messageTemplates } from '@/lib/messages';
+
+/**
+ * 自動退室状態の型定義
+ */
+export interface AutoExitStatus {
+  isScheduled: boolean;
+  scheduledTime: Date | null;
+  remainingTime: number | null; // ミリ秒単位
+  formattedTime: string | null; // 表示用フォーマット
+}
+
+/**
+ * 自動退室が必要なユーザーをチェックして退室処理を行う
+ * @param db MongoDB データベース接続
+ * @param sendNotification YouTube通知メッセージを送信するかどうか
+ * @returns 処理された座席の数と詳細情報
+ */
+export async function checkAndProcessAutoExit(
+  db: Db,
+  sendNotification: boolean = false
+): Promise<{
+  processedCount: number;
+  details: Array<{
+    username: string | null;
+    roomId: string;
+    position: number;
+    success: boolean;
+    error?: string;
+  }>;
+}> {
+  const results = {
+    processedCount: 0,
+    details: [] as Array<{
+      username: string | null;
+      roomId: string;
+      position: number;
+      success: boolean;
+      error?: string;
+    }>
+  };
+
+  try {
+    const seatsCollection = db.collection('seats');
+    const currentTime = new Date();
+    
+    console.log(`[AutoExit] ${currentTime.toISOString()}に自動退室チェックを実行`);
+    
+    // 期限切れの座席を検索（入室中かつ自動退室時間が現在時刻より前）
+    const expiredSeats = await seatsCollection.find({
+      username: { $ne: null },
+      autoExitScheduled: { $lt: currentTime }
+    }).toArray();
+    
+    if (expiredSeats.length === 0) {
+      console.log('[AutoExit] 期限切れの座席はありませんでした');
+      return results;
+    }
+    
+    console.log(`[AutoExit] ${expiredSeats.length}件の期限切れ座席を処理します`);
+    
+    // YouTube通知のための準備
+    let liveChatId: string | null = null;
+    if (sendNotification) {
+      const videoId = process.env.YOUTUBE_VIDEO_ID;
+      if (videoId) {
+        try {
+          liveChatId = await getLiveChatId(videoId);
+        } catch (error) {
+          console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました:', error);
+        }
+      }
+    }
+    
+    // 各座席を処理
+    for (const seat of expiredSeats) {
+      const username = seat.username;
+      const roomId = seat.room_id;
+      const position = seat.position;
+      
+      try {
+        // 座席を空席に設定
+        await seatsCollection.updateOne(
+          { _id: seat._id },
+          { 
+            $set: { 
+              username: null, 
+              authorId: null, 
+              task: null, 
+              enterTime: null, 
+              autoExitScheduled: null,
+              timestamp: new Date()
+            } 
+          }
+        );
+        
+        console.log(`[AutoExit] ${username}を自動退室しました (部屋: ${roomId}, 座席: ${position})`);
+        
+        // 自動退室メッセージをYouTubeチャットに送信（設定されている場合）
+        if (sendNotification && liveChatId && username) {
+          await sendChatMessage(
+            liveChatId, 
+            messageTemplates.autoExited(username, roomId, position)
+          );
+        }
+        
+        results.processedCount++;
+        results.details.push({
+          username,
+          roomId,
+          position,
+          success: true
+        });
+      } catch (error) {
+        console.error(`[AutoExit] 座席(${roomId}-${position})の自動退室処理中にエラーが発生:`, error);
+        results.details.push({
+          username,
+          roomId,
+          position,
+          success: false,
+          error: error instanceof Error ? error.message : '不明なエラー'
+        });
+      }
+    }
+    
+    return results;
+  } catch (error) {
+    console.error('[AutoExit] 自動退室処理全体でエラーが発生しました:', error);
+    throw error;
+  }
+}
+
+/**
+ * 指定された部屋・位置のユーザーの自動退室時間を更新/設定する
+ * @param db MongoDB データベース接続
+ * @param roomId 部屋ID
+ * @param position 座席位置
+ * @param hours 入室時間から何時間後に自動退室するか (デフォルト: 2時間)
+ * @returns 更新結果
+ */
+export async function scheduleAutoExit(
+  db: Db,
+  roomId: string,
+  position: number,
+  hours: number = 2
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const seatsCollection = db.collection('seats');
+    
+    // 座席情報を取得
+    const seat = await seatsCollection.findOne({
+      room_id: roomId,
+      position: position
+    });
+    
+    if (!seat || !seat.username) {
+      return { 
+        success: false, 
+        error: '指定された座席が見つからないか、ユーザーが着席していません' 
+      };
+    }
+    
+    // 入室時間から自動退室時間を計算
+    const enterTime = seat.enterTime ? new Date(seat.enterTime) : new Date();
+    const autoExitTime = new Date(enterTime);
+    autoExitTime.setHours(autoExitTime.getHours() + hours);
+    
+    // 自動退室時間を更新
+    await seatsCollection.updateOne(
+      { _id: seat._id },
+      { $set: { autoExitScheduled: autoExitTime } }
+    );
+    
+    console.log(`[AutoExit] ${seat.username}の自動退室を${autoExitTime.toISOString()}に設定しました`);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('[AutoExit] 自動退室スケジュール設定中にエラーが発生しました:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : '不明なエラー' 
+    };
+  }
+}
+
+/**
+ * 自動退室のステータスを取得する
+ * @param scheduledTime 自動退室時間
+ * @returns 自動退室状態の情報
+ */
+export function getAutoExitStatus(scheduledTime: Date | string | null): AutoExitStatus {
+  if (!scheduledTime) {
+    return {
+      isScheduled: false,
+      scheduledTime: null,
+      remainingTime: null,
+      formattedTime: null
+    };
+  }
+
+  const autoExitTime = typeof scheduledTime === 'string' 
+    ? new Date(scheduledTime) 
+    : scheduledTime;
+  
+  const now = new Date();
+  const remainingMs = autoExitTime.getTime() - now.getTime();
+
+  // 既に期限切れの場合
+  if (remainingMs <= 0) {
+    return {
+      isScheduled: true,
+      scheduledTime: autoExitTime,
+      remainingTime: 0,
+      formattedTime: '時間切れ'
+    };
+  }
+
+  return {
+    isScheduled: true,
+    scheduledTime: autoExitTime,
+    remainingTime: remainingMs,
+    formattedTime: formatRemainingTime(remainingMs)
+  };
+}
+
+/**
+ * 残り時間をフォーマットする
+ * @param milliseconds 残りミリ秒
+ * @returns フォーマットされた時間文字列 (例: "1時間23分")
+ */
+export function formatRemainingTime(milliseconds: number): string {
+  if (milliseconds <= 0) {
+    return '時間切れ';
+  }
+
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes > 0) {
+      return `${hours}時間${remainingMinutes}分`;
+    }
+    return `${hours}時間`;
+  } else if (minutes > 0) {
+    const remainingSeconds = seconds % 60;
+    if (remainingSeconds > 0 && minutes < 10) {
+      // 10分未満なら秒も表示
+      return `${minutes}分${remainingSeconds}秒`;
+    }
+    return `${minutes}分`;
+  } else {
+    return `${seconds}秒`;
+  }
+}
+
+/**
+ * 現在の日付と時刻をフォーマットする
+ * @returns フォーマットされた日時文字列 (例: "2023/04/06 15:30")
+ */
+export function formatCurrentDateTime(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  
+  return `${year}/${month}/${day} ${hours}:${minutes}`;
+}
+</file>
+
+<file path="lib/client-utils.ts">
+import { AutoExitStatus } from './types';
+
+/**
+ * 自動退室のステータスを取得する（クライアント側で安全に使用できる）
+ * @param scheduledTime 自動退室時間
+ * @returns 自動退室状態の情報
+ */
+export function getAutoExitStatus(scheduledTime: Date | string | null): AutoExitStatus {
+  if (!scheduledTime) {
+    return {
+      isScheduled: false,
+      scheduledTime: null,
+      remainingTime: null,
+      formattedTime: null
+    };
+  }
+
+  const autoExitTime = typeof scheduledTime === 'string' 
+    ? new Date(scheduledTime) 
+    : scheduledTime;
+  
+  const now = new Date();
+  const remainingMs = autoExitTime.getTime() - now.getTime();
+
+  // 既に期限切れの場合
+  if (remainingMs <= 0) {
+    return {
+      isScheduled: true,
+      scheduledTime: autoExitTime,
+      remainingTime: 0,
+      formattedTime: '時間切れ'
+    };
+  }
+
+  return {
+    isScheduled: true,
+    scheduledTime: autoExitTime,
+    remainingTime: remainingMs,
+    formattedTime: formatRemainingTime(remainingMs)
+  };
+}
+
+/**
+ * 残り時間をフォーマットする
+ * @param milliseconds 残りミリ秒
+ * @returns フォーマットされた時間文字列 (例: "1時間23分")
+ */
+export function formatRemainingTime(milliseconds: number): string {
+  if (milliseconds <= 0) {
+    return '時間切れ';
+  }
+
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes > 0) {
+      return `${hours}時間${remainingMinutes}分`;
+    }
+    return `${hours}時間`;
+  } else if (minutes > 0) {
+    const remainingSeconds = seconds % 60;
+    if (remainingSeconds > 0 && minutes < 10) {
+      // 10分未満なら秒も表示
+      return `${minutes}分${remainingSeconds}秒`;
+    }
+    return `${minutes}分`;
+  } else {
+    return `${seconds}秒`;
+  }
+}
+
+/**
+ * 現在の日付と時刻をフォーマットする
+ * @returns フォーマットされた日時文字列 (例: "2023/04/06 15:30")
+ */
+export function formatCurrentDateTime(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  
+  return `${year}/${month}/${day} ${hours}:${minutes}`;
+}
+
+/**
+ * 経過時間を計算する
+ * @param startTime 開始時間
+ * @returns フォーマットされた経過時間 (例: "1時間23分")
+ */
+export function calculateElapsedTime(startTime: Date | string | null): string {
+  if (!startTime) return "0分";
+  
+  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
+  const now = new Date();
+  const elapsedMs = now.getTime() - start.getTime();
+  
+  if (elapsedMs <= 0) return "0分";
+  
+  const seconds = Math.floor(elapsedMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}時間${minutes % 60}分`;
+  } else {
+    return `${minutes}分`;
+  }
+}
+
+/**
+ * 経過時間に応じたスタイルを取得する
+ * @param startTime 開始時間
+ * @returns CSSクラス名
+ */
+export function getElapsedTimeStyle(startTime: Date | string | null): string {
+  if (!startTime) return "text-blue-400";
+  
+  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
+  const now = new Date();
+  const elapsedMs = now.getTime() - start.getTime();
+  const minutes = Math.floor(elapsedMs / (1000 * 60));
+  
+  if (minutes >= 120) { // 2時間以上
+    return "text-red-500";
+  } else if (minutes >= 60) { // 1時間以上
+    return "text-orange-500";
+  } else if (minutes >= 30) { // 30分以上
+    return "text-amber-500";
+  } else {
+    return "text-blue-400";
+  }
+}
+</file>
+
+<file path="lib/sseUtils.ts">
+import { Db } from 'mongodb';
+
+/**
+ * MongoDB から部屋と座席のデータを取得し、クライアント用にフォーマットする
+ * @param db MongoDB データベース接続
+ * @returns フォーマットされた部屋と座席のデータ
+ */
+export async function fetchRoomData(db: Db) {
+  console.log('[SSE:Utils] Fetching room data from MongoDB');
+  try {
+    const rooms = await db.collection('rooms').find().toArray();
+    console.log(`[SSE:Utils] Retrieved ${rooms.length} rooms`);
+    const seats = await db.collection('seats').find().toArray();
+    console.log(`[SSE:Utils] Retrieved ${seats.length} seats`);
+
+    // roomsが空の場合は、シートを直接配列の最初の要素として使用する
+    if (rooms.length === 0) {
+      console.log('[SSE:Utils] No rooms found, creating a default room with all seats');
+      const defaultRoom = {
+        id: 'focus-room',
+        type: 'focus',
+        seats: seats.map(seat => ({
+          id: seat._id.toString(),
+          username: seat.username,
+          task: seat.task,
+          enterTime: seat.enterTime,
+          autoExitScheduled: seat.autoExitScheduled,
+          timestamp: seat.timestamp
+        }))
+      };
+      return { rooms: [defaultRoom] };
+    }
+
+    const roomsWithSeats = rooms.map(room => ({
+      id: room._id,
+      seats: seats
+        .filter(seat => seat.room_id === room._id)
+        .sort((a, b) => a.position - b.position)
+        .map(seat => ({
+          id: seat._id.toString(),
+          username: seat.username,
+          task: seat.task,
+          enterTime: seat.enterTime,
+          autoExitScheduled: seat.autoExitScheduled,
+          timestamp: seat.timestamp
+        }))
+    }));
+
+    console.log('[SSE:Utils] Room data formatted successfully');
+    return { rooms: roomsWithSeats };
+  } catch (error) {
+    console.error('[SSE:Utils] Error fetching room data:', error);
+    return { rooms: [], error: 'Failed to fetch data' };
+  }
+}
+
+/**
+ * 指数バックオフ付きの再接続試行回数とタイムアウトを計算する
+ * @param retryCount 現在の試行回数
+ * @param baseDelay 基本の待機時間（ミリ秒）
+ * @param maxDelay 最大待機時間（ミリ秒）
+ * @returns 次回待機時間（ミリ秒）
+ */
+export function calculateBackoff(retryCount: number, baseDelay: number = 1000, maxDelay: number = 30000): number {
+  // 指数バックオフ（2のべき乗）とランダム要素（ジッター）を加える
+  const exponentialDelay = Math.min(
+    maxDelay,
+    baseDelay * Math.pow(2, retryCount) * (1 + Math.random() * 0.2)
+  );
+  return Math.round(exponentialDelay);
+}
+
+/**
+ * システムメッセージをクライアントに送信するためのSSEメッセージを生成する
+ * @param message メッセージ内容
+ * @param type メッセージタイプ（info, warning, error など）
+ * @returns フォーマットされたSSEメッセージ
+ */
+export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info'): string {
+  return `event: system-message\ndata: ${JSON.stringify({ message, type, timestamp: new Date().toISOString() })}\n\n`;
+}
+
+/**
+ * MongoDB Change Streamの接続状態を追跡するためのクラス
+ * グローバルな状態を管理し、複数のSSE接続間で自動退室チェックの重複を防ぐ
+ */
+export class ChangeStreamManager {
+  private static instance: ChangeStreamManager;
+  private activeConnections: number = 0;
+  private isAutoExitRunning: boolean = false;
+  private autoExitInterval: NodeJS.Timeout | null = null;
+
+  private constructor() {}
+
+  public static getInstance(): ChangeStreamManager {
+    if (!ChangeStreamManager.instance) {
+      ChangeStreamManager.instance = new ChangeStreamManager();
+    }
+    return ChangeStreamManager.instance;
+  }
+
+  /**
+   * 新しいSSE接続を登録する
+   * @returns 現在のアクティブ接続数
+   */
+  public registerConnection(): number {
+    this.activeConnections++;
+    console.log(`[SSE:Manager] New connection registered. Active connections: ${this.activeConnections}`);
+    return this.activeConnections;
+  }
+
+  /**
+   * SSE接続の終了を登録する
+   * @returns 残りのアクティブ接続数
+   */
+  public unregisterConnection(): number {
+    this.activeConnections = Math.max(0, this.activeConnections - 1);
+    console.log(`[SSE:Manager] Connection unregistered. Active connections: ${this.activeConnections}`);
+    return this.activeConnections;
+  }
+
+  /**
+   * 自動退室チェックの開始を試みる
+   * @param db MongoDB データベース接続
+   * @param checkFn 自動退室チェック関数
+   * @returns すでに別の接続で実行中の場合はfalse、新規に開始した場合はtrue
+   */
+  public startAutoExitCheck(db: Db, checkFn: () => Promise<void>): boolean {
+    // すでに自動退室チェックが実行中の場合は重複して開始しない
+    if (this.isAutoExitRunning && this.autoExitInterval) {
+      console.log('[SSE:Manager] Auto-exit check is already running in another connection');
+      return false;
+    }
+
+    // 自動退室チェックを開始
+    this.isAutoExitRunning = true;
+    this.autoExitInterval = setInterval(async () => {
+      try {
+        if (this.isAutoExitRunning) {
+          await checkFn();
+        }
+      } catch (error) {
+        console.error('[SSE:Manager] Error in auto-exit check interval:', error);
+      }
+    }, 60000); // 1分ごと
+
+    console.log('[SSE:Manager] Started auto-exit check interval');
+    return true;
+  }
+
+  /**
+   * 自動退室チェックを停止する
+   * 最後の接続が終了した場合のみ実際に停止する
+   */
+  public stopAutoExitCheck(): void {
+    if (this.activeConnections <= 0 && this.autoExitInterval) {
+      clearInterval(this.autoExitInterval);
+      this.autoExitInterval = null;
+      this.isAutoExitRunning = false;
+      console.log('[SSE:Manager] Stopped auto-exit check interval (no active connections)');
+    } else {
+      console.log(`[SSE:Manager] Not stopping auto-exit check - ${this.activeConnections} connections still active`);
+    }
+  }
+
+  /**
+   * 自動退室チェックが実行中かどうかを返す
+   */
+  public isAutoExitCheckRunning(): boolean {
+    return this.isAutoExitRunning;
+  }
+}
+</file>
+
+<file path="lib/store.ts">
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+// ポモドーロモードの型
+export type TimerMode = 'WORK' | 'BREAK' | 'LONG_BREAK';
+
+// ポモドーロタイマーの設定
+export const POMODORO_MODES = {
+  WORK: {
+    name: '作業中',
+    duration: 25 * 60, // 25分（秒単位）
+    color: 'bg-amber-500',
+    nextMode: 'BREAK' as TimerMode,
+    nextName: '休憩'
+  },
+  BREAK: {
+    name: '休憩中',
+    duration: 5 * 60, // 5分（秒単位）
+    color: 'bg-green-500',
+    nextMode: 'WORK' as TimerMode,
+    nextName: '作業'
+  },
+  LONG_BREAK: {
+    name: '長休憩',
+    duration: 15 * 60, // 15分（秒単位）
+    color: 'bg-blue-500',
+    nextMode: 'WORK' as TimerMode,
+    nextName: '作業'
+  }
+};
+
+// 現在時刻をフォーマットする関数（再利用性のために外部化）
+export const formatTime = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+// 現在時刻に基づいてモードを判定する関数
+export const determineTimeModeFromCurrentTime = (now: Date): {mode: TimerMode, timeLeft: number} => {
+  const minutes = now.getMinutes();
+  
+  // 55-59分は休憩モード
+  if (minutes >= 55 && minutes <= 59) {
+    // 残り時間を計算（60分 - 現在分:秒）
+    const nextHour = new Date(now);
+    nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+    const timeLeftMs = nextHour.getTime() - now.getTime();
+    const timeLeftSec = Math.ceil(timeLeftMs / 1000);
+    return { mode: "BREAK", timeLeft: timeLeftSec };
+  }
+  
+  // 25-29分は休憩モード
+  if (minutes >= 25 && minutes <= 29) {
+    // 残り時間を計算（30分 - 現在分:秒）
+    const nextHalfHour = new Date(now);
+    nextHalfHour.setMinutes(30, 0, 0);
+    const timeLeftMs = nextHalfHour.getTime() - now.getTime();
+    const timeLeftSec = Math.ceil(timeLeftMs / 1000);
+    return { mode: "BREAK", timeLeft: timeLeftSec };
+  }
+  
+  // それ以外はフォーカスモード
+  // 残り時間の計算（次の休憩時間までの時間）
+  let targetMinute = 25;
+  if (minutes >= 30 && minutes < 55) {
+    targetMinute = 55;
+  } else if (minutes >= 0 && minutes < 25) {
+    targetMinute = 25;
+  }
+  
+  const nextTarget = new Date(now);
+  nextTarget.setMinutes(targetMinute, 0, 0);
+  
+  // 既に目標時間を過ぎている場合は次の時間帯に調整
+  if (nextTarget.getTime() <= now.getTime()) {
+    nextTarget.setHours(nextTarget.getHours() + 1);
+  }
+  
+  const timeLeftMs = nextTarget.getTime() - now.getTime();
+  const timeLeftSec = Math.ceil(timeLeftMs / 1000);
+  
+  return { mode: "WORK", timeLeft: timeLeftSec };
+};
+
+// ポモドーロタイマーの状態
+interface PomodoroState {
+  mode: TimerMode;
+  timeLeft: number;
+  isActive: boolean;
+  progress: number;
+  workSessionsCompleted: number;
+  lastTimeBasedUpdate: number;
+  
+  // アクション
+  startTimer: () => void;
+  pauseTimer: () => void;
+  resetTimer: () => void;
+  switchMode: (mode: TimerMode) => void;
+  updateRemainingTime: (seconds: number) => void;
+  updateFromCurrentTime: () => void;
+  tickTimer: () => void;
+}
+
+// ポモドーロタイマーのストア作成
+export const usePomodoroStore = create<PomodoroState>()(
+  persist(
+    (set, get) => {
+      // 現在時刻ベースの初期値を計算
+      const { mode: initialMode, timeLeft: initialTimeLeft } = determineTimeModeFromCurrentTime(new Date());
+
+      return {
+        // 初期状態
+        mode: initialMode,
+        timeLeft: initialTimeLeft,
+        isActive: true,
+        progress: 0,
+        workSessionsCompleted: 0,
+        lastTimeBasedUpdate: Date.now(),
+
+        // アクション
+        startTimer: () => set({ isActive: true }),
+        
+        pauseTimer: () => set({ isActive: false }),
+        
+        resetTimer: () => {
+          const currentMode = get().mode;
+          set({
+            timeLeft: POMODORO_MODES[currentMode].duration,
+            isActive: false,
+            progress: 0
+          });
+        },
+        
+        switchMode: (mode: TimerMode) => set({
+          mode,
+          timeLeft: POMODORO_MODES[mode].duration,
+          progress: 0
+        }),
+        
+        updateRemainingTime: (seconds: number) => {
+          const currentMode = get().mode;
+          const totalDuration = POMODORO_MODES[currentMode].duration;
+          const progress = ((totalDuration - seconds) / totalDuration) * 100;
+          
+          set({
+            timeLeft: seconds,
+            progress: Math.min(Math.max(progress, 0), 100) // 0-100の範囲に制限
+          });
+
+          // ブラウザのタイトルを更新
+          if (typeof document !== 'undefined') {
+            const formattedTime = formatTime(seconds);
+            const modeName = POMODORO_MODES[currentMode].name;
+            const activeSymbol = get().isActive ? '▶' : '⏸';
+            document.title = `${activeSymbol} ${formattedTime} - ${modeName}`;
+          }
+        },
+        
+        updateFromCurrentTime: () => {
+          const now = Date.now();
+          // 最小2秒の間隔をあけて更新（頻繁な更新を避ける）
+          if (now - get().lastTimeBasedUpdate >= 2000) {
+            const { mode, timeLeft } = determineTimeModeFromCurrentTime(new Date());
+            set({
+              mode,
+              timeLeft,
+              isActive: true,
+              lastTimeBasedUpdate: now
+            });
+            
+            // 残り時間の更新（タイトル更新などのため）
+            get().updateRemainingTime(timeLeft);
+          }
+        },
+        
+        tickTimer: () => {
+          if (!get().isActive) return;
+          
+          const currentTimeLeft = get().timeLeft;
+          
+          if (currentTimeLeft <= 0) {
+            // タイマー終了時、次のモードに切り替え
+            const currentMode = get().mode;
+            const nextMode = POMODORO_MODES[currentMode].nextMode;
+            
+            // 作業モードが終了したらセッション数を増やす
+            const newWorkSessionsCompleted = 
+              currentMode === 'WORK' 
+                ? get().workSessionsCompleted + 1 
+                : get().workSessionsCompleted;
+            
+            set({
+              mode: nextMode,
+              timeLeft: POMODORO_MODES[nextMode].duration,
+              progress: 0,
+              workSessionsCompleted: newWorkSessionsCompleted
+            });
+          } else {
+            // タイマーをカウントダウン
+            get().updateRemainingTime(currentTimeLeft - 1);
+          }
+        }
+      };
+    },
+    {
+      name: 'pomodoro-timer-storage',
+      // ブラウザ以外の環境でlocalStorageが使えない場合のフォールバック
+      skipHydration: typeof window === 'undefined'
+    }
+  )
+);
+</file>
+
+<file path="lib/types.ts">
+// クライアント・サーバー共通の型定義
+
+/**
+ * YouTube API の型定義
+ */
+export interface Author {
+  displayName: string;
+  profileImageUrl: string;
+  channelId: string;
+}
+
+export interface MessageSnippet {
+  displayMessage: string;
+  publishedAt: string;
+}
+
+export interface ChatItem {
+  id: string;
+  snippet: MessageSnippet;
+  authorDetails: Author;
+}
+
+export interface ChatResponse {
+  items: ChatItem[];
+  nextPageToken: string;
+  pollingIntervalMillis: number;
+}
+
+/**
+ * 自動退室状態の型定義
+ */
+export interface AutoExitStatus {
+  isScheduled: boolean;
+  scheduledTime: Date | null;
+  remainingTime: number | null; // ミリ秒単位
+  formattedTime: string | null; // 表示用フォーマット
+}
+
+/**
+ * 座席の型定義
+ */
+export interface Seat {
+  id: string;
+  room_id: string;
+  position: number;
+  username: string | null;
+  authorId?: string | null;
+  task?: string | null;
+  enterTime?: Date | string | null;
+  autoExitScheduled?: Date | string | null;
+  timestamp: Date | string;
+}
+
+/**
+ * ユーザーカード用の型定義（クライアント側で使用）
+ */
+export interface UserCardData {
+  id: string;
+  name: string;
+  avatar?: string;
+  task?: string | null;
+  autoExitScheduled?: Date | string | null;
+  enterTime?: Date | string | null;
+}
+
+/**
+ * コマンド実行結果の型定義
+ */
+export interface CommandResult {
+  success: boolean;
+  action?: 'enter' | 'exit' | 'update' | 'none' | 'create';
+  seat?: {
+    roomId: string;
+    position: number;
+    username?: string | null;
+    previousUsername?: string;
+    task?: string | null;
+    id?: string;
+  };
+  message?: string;
+  error?: string;
+}
+
+/**
+ * YouTube API エラーの型定義
+ */
+export class YouTubeAPIError extends Error {
+  status?: number;
+  code?: string;
+  
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = 'YouTubeAPIError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * コマンドの型定義
+ */
+export interface Command {
+  command: string;
+  taskName?: string;
+  authorName: string;
+  authorId: string;
+  commentId: string;
+  commentText: string;
+}
+
+/**
+ * 自動退室機能の処理結果
+ */
+export interface AutoExitProcessResult {
+  processedCount: number;
+  details: Array<{
+    username: string | null;
+    roomId: string;
+    position: number;
+    success: boolean;
+    error?: string;
+  }>;
+}
+</file>
+
+<file path=".prettierrc">
+{
+  "semi": true,
+  "singleQuote": true,
+  "tabWidth": 2,
+  "trailingComma": "es5",
+  "printWidth": 100,
+  "arrowParens": "avoid"
+}
+</file>
+
+<file path="jest.config.js">
+// Jest configuration for Next.js with TypeScript
+const nextJest = require('next/jest');
+
+const createJestConfig = nextJest({
+  // Provide the path to your Next.js app to load next.config.js and .env files in your test environment
+  dir: './',
+});
+
+// Add any custom config to be passed to Jest
+const customJestConfig = {
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  testEnvironment: 'jest-environment-jsdom',
+  moduleNameMapper: {
+    // Handle module aliases (this will be automatically configured for you soon)
+    '^@/components/(.*)$': '<rootDir>/components/$1',
+    '^@/app/(.*)$': '<rootDir>/app/$1',
+    '^@/lib/(.*)$': '<rootDir>/lib/$1',
+    '^@/hooks/(.*)$': '<rootDir>/hooks/$1',
+  },
+  testPathIgnorePatterns: ['<rootDir>/node_modules/', '<rootDir>/.next/'],
+  transform: {
+    // Use babel-jest to transpile tests with the next/babel preset
+    '^.+\\.(js|jsx|ts|tsx)$': ['babel-jest', { presets: ['next/babel'] }],
+  },
+  transformIgnorePatterns: [
+    '/node_modules/',
+    '^.+\\.module\\.(css|sass|scss)$',
+  ],
+  collectCoverage: true,
+  collectCoverageFrom: [
+    'app/**/*.{js,jsx,ts,tsx}',
+    'components/**/*.{js,jsx,ts,tsx}',
+    'lib/**/*.{js,jsx,ts,tsx}',
+    'hooks/**/*.{js,jsx,ts,tsx}',
+    '!**/*.d.ts',
+    '!**/node_modules/**',
+  ],
+};
+
+// createJestConfig is exported this way to ensure that next/jest can load the Next.js config which is async
+module.exports = createJestConfig(customJestConfig);
+</file>
+
+<file path="jest.setup.js">
+// Learn more: https://github.com/testing-library/jest-dom
+import '@testing-library/jest-dom';
+
+// Mock the TextEncoder/TextDecoder which are used in SSE implementation
+global.TextEncoder = require('util').TextEncoder;
+global.TextDecoder = require('util').TextDecoder;
+
+// Mock localStorage
+if (typeof window !== 'undefined') {
+  // Browserの場合、mock不要
+} else {
+  // Node.jsの場合、localStorageをモック
+  const localStorageMock = (function() {
+    let store = {};
+    return {
+      getItem(key) {
+        return store[key] || null;
+      },
+      setItem(key, value) {
+        store[key] = String(value);
+      },
+      removeItem(key) {
+        delete store[key];
+      },
+      clear() {
+        store = {};
+      }
+    };
+  })();
+  
+  Object.defineProperty(global, 'localStorage', {
+    value: localStorageMock
+  });
+}
+
+// Mock Next.js router
+jest.mock('next/navigation', () => ({
+  useRouter() {
+    return {
+      push: jest.fn(),
+      replace: jest.fn(),
+      prefetch: jest.fn(),
+      back: jest.fn(),
+    };
+  },
+  useSearchParams() {
+    return {
+      get: jest.fn(),
+    };
+  },
+  usePathname() {
+    return '';
+  },
+}));
+</file>
 
 <file path=".cursor/rules/project-rules.mdc">
 ---
@@ -370,21 +2658,31 @@ YouTubeのライブ配信コメントをリアルタイムで取得し、特定�
 <file path="app/api/check-auto-exit/route.ts">
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
-import { sendChatMessage } from '@/lib/youtube';
+import { Db, ObjectId } from 'mongodb';
+import { getLiveChatId, sendChatMessage } from '@/lib/youtube';
 import { messageTemplates } from '@/lib/messages';
+import { AutoExitProcessResult } from '@/lib/types';
 
 /**
- * 期限切れの座席を検索して自動退室処理を行うAPIエンドポイント
- * このエンドポイントは定期的に呼び出される（外部クーロンジョブまたはクライアントからのポーリング）
+ * 自動退室が必要なユーザーをチェックして退室処理を行う
+ * @param db MongoDB データベース接続
+ * @param sendNotification YouTube通知メッセージを送信するかどうか
+ * @returns 処理された座席の数と詳細情報
  */
-export async function GET() {
+async function checkAndProcessAutoExit(
+  db: Db,
+  sendNotification: boolean = false
+): Promise<AutoExitProcessResult> {
+  const results: AutoExitProcessResult = {
+    processedCount: 0,
+    details: [] 
+  };
+
   try {
-    const client = await clientPromise;
-    const db = client.db('coworking');
     const seatsCollection = db.collection('seats');
-    
     const currentTime = new Date();
-    console.log(`[AutoExit] ${currentTime}に自動退室チェックを実行します`);
+    
+    console.log(`[AutoExit] ${currentTime.toISOString()}に自動退室チェックを実行`);
     
     // 期限切れの座席を検索（入室中かつ自動退室時間が現在時刻より前）
     const expiredSeats = await seatsCollection.find({
@@ -392,29 +2690,33 @@ export async function GET() {
       autoExitScheduled: { $lt: currentTime }
     }).toArray();
     
-    console.log(`[AutoExit] ${expiredSeats.length}件の期限切れ座席が見つかりました`);
+    if (expiredSeats.length === 0) {
+      console.log('[AutoExit] 期限切れの座席はありませんでした');
+      return results;
+    }
     
-    // 自動退室通知を送信するためのYouTube動画ID
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
+    console.log(`[AutoExit] ${expiredSeats.length}件の期限切れ座席を処理します`);
+    
+    // YouTube通知のための準備
     let liveChatId: string | null = null;
-    
-    if (videoId && expiredSeats.length > 0) {
-      try {
-        const { getLiveChatId } = await import('@/lib/youtube');
-        liveChatId = await getLiveChatId(videoId);
-      } catch (error) {
-        console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました:', error);
+    if (sendNotification) {
+      const videoId = process.env.YOUTUBE_VIDEO_ID;
+      if (videoId) {
+        try {
+          liveChatId = await getLiveChatId(videoId);
+        } catch (error) {
+          console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました:', error);
+        }
       }
     }
     
     // 各座席を処理
     for (const seat of expiredSeats) {
+      const username = seat.username;
+      const roomId = seat.room_id;
+      const position = seat.position;
+      
       try {
-        // 自動退室前の情報を保存
-        const username = seat.username;
-        const roomId = seat.room_id;
-        const position = seat.position;
-        
         // 座席を空席に設定
         await seatsCollection.updateOne(
           { _id: seat._id },
@@ -432,27 +2734,100 @@ export async function GET() {
         
         console.log(`[AutoExit] ${username}を自動退室しました (部屋: ${roomId}, 座席: ${position})`);
         
-        // 自動退室メッセージをYouTubeチャットに送信（オプション）
-        if (liveChatId && username) {
+        // 自動退室メッセージをYouTubeチャットに送信（設定されている場合）
+        if (sendNotification && liveChatId && username) {
           await sendChatMessage(
             liveChatId, 
             messageTemplates.autoExited(username, roomId, position)
           );
         }
+        
+        results.processedCount++;
+        results.details.push({
+          username,
+          roomId,
+          position,
+          success: true
+        });
       } catch (error) {
-        console.error(`[AutoExit] 座席${seat._id}の自動退室処理中にエラーが発生しました:`, error);
+        console.error(`[AutoExit] 座席(${roomId}-${position})の自動退室処理中にエラーが発生:`, error);
+        results.details.push({
+          username,
+          roomId,
+          position,
+          success: false,
+          error: error instanceof Error ? error.message : '不明なエラー'
+        });
       }
     }
     
+    return results;
+  } catch (error) {
+    console.error('[AutoExit] 自動退室処理全体でエラーが発生しました:', error);
+    throw error;
+  }
+}
+
+/**
+ * POST /api/check-auto-exit
+ * 自動退室チェックを実行するAPIエンドポイント
+ */
+export async function POST(request: Request) {
+  console.log('[API] 自動退室チェックリクエストを受信');
+  
+  try {
+    // リクエストボディを解析
+    const { sendNotification = false } = await request.json();
+    
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // 自動退室チェックを実行
+    const result = await checkAndProcessAutoExit(db, sendNotification);
+    
     return NextResponse.json({
-      processed: expiredSeats.length,
-      timestamp: currentTime.toISOString()
+      success: true, 
+      processedCount: result.processedCount,
+      details: result.details
     });
     
   } catch (error) {
-    console.error('[AutoExit] 自動退室チェック中にエラーが発生しました:', error);
+    console.error('[API] 自動退室チェック中にエラーが発生:', error);
+    
     return NextResponse.json(
-      { error: '自動退室処理に失敗しました' },
+      { error: '自動退室チェックに失敗しました', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/check-auto-exit
+ * システムからの定期実行用エンドポイント
+ */
+export async function GET() {
+  console.log('[API] 自動退室チェックのGETリクエストを受信 (システム実行)');
+  
+  try {
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // 自動退室チェックを実行（通知送信は有効）
+    const result = await checkAndProcessAutoExit(db, true);
+    
+    return NextResponse.json({
+      success: true, 
+      processedCount: result.processedCount,
+      details: result.details
+    });
+    
+  } catch (error) {
+    console.error('[API] 自動退室チェック中にエラーが発生:', error);
+    
+    return NextResponse.json(
+      { error: '自動退室チェックに失敗しました', details: (error as Error).message },
       { status: 500 }
     );
   }
@@ -500,6 +2875,9 @@ export async function POST(request: Request) {
 <file path="app/api/sse/route.ts">
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
+import { checkAndProcessAutoExit } from '@/lib/autoExit';
+import { fetchRoomData, calculateBackoff, createSystemMessage, ChangeStreamManager } from '@/lib/sseUtils';
+import { ChangeStream, ChangeStreamDocument } from 'mongodb';
 
 export async function GET() {
   console.log('[SSE] Handler started');
@@ -510,104 +2888,44 @@ export async function GET() {
     console.log('[SSE] MongoDB connection established');
     const encoder = new TextEncoder();
 
+    // シングルトンのChangeStreamManagerを取得
+    const manager = ChangeStreamManager.getInstance();
+    // このSSE接続を登録
+    manager.registerConnection();
+
     // コントローラーがクローズされたかを追跡するフラグ
     let isControllerClosed = false;
+    // 再接続の試行回数
+    let changeStreamRetryCount = 0;
+    // アクティブなChangeStream
+    let changeStream: ChangeStream | null = null;
 
     const stream = new ReadableStream({
       async start(controller) {
         console.log('[SSE] Stream initialization started');
-        // Function to fetch and format room data
-        const fetchRoomData = async () => {
-          console.log('[SSE] Fetching room data from MongoDB');
-          try {
-            const rooms = await db.collection('rooms').find().toArray();
-            console.log(`[SSE] Retrieved ${rooms.length} rooms`);
-            const seats = await db.collection('seats').find().toArray();
-            console.log(`[SSE] Retrieved ${seats.length} seats`);
 
-            // roomsが空の場合は、シートを直接配列の最初の要素として使用する
-            if (rooms.length === 0) {
-              console.log('[SSE] No rooms found, creating a default room with all seats');
-              const defaultRoom = {
-                id: 'focus-room',
-                type: 'focus',
-                seats: seats.map(seat => ({
-                  id: seat._id.toString(),
-                  username: seat.username,
-                  task: seat.task,
-                  enterTime: seat.enterTime,
-                  autoExitScheduled: seat.autoExitScheduled,
-                  timestamp: seat.timestamp
-                }))
-              };
-              return { rooms: [defaultRoom] };
-            }
-
-            const roomsWithSeats = rooms.map(room => ({
-              id: room._id,
-              seats: seats
-                .filter(seat => seat.room_id === room._id)
-                .sort((a, b) => a.position - b.position)
-                .map(seat => ({
-                  id: seat._id.toString(),
-                  username: seat.username,
-                  task: seat.task,
-                  enterTime: seat.enterTime,
-                  autoExitScheduled: seat.autoExitScheduled,
-                  timestamp: seat.timestamp
-                }))
-            }));
-
-            console.log('[SSE] Room data formatted successfully');
-            return { rooms: roomsWithSeats };
-          } catch (error) {
-            console.error('[SSE] Error fetching room data:', error);
-            return { rooms: [], error: 'Failed to fetch data' };
-          }
-        };
-
-        // 自動退室チェック関数を定義
+        // 自動退室チェック関数
         const checkAutoExit = async () => {
           try {
             console.log('[SSE] 自動退室チェックを実行します');
-            const currentTime = new Date();
             
-            // 期限切れの座席を検索
-            const expiredSeats = await db.collection('seats').find({
-              username: { $ne: null },
-              autoExitScheduled: { $lt: currentTime }
-            }).toArray();
+            // 共通モジュールを使用して自動退室処理を実行（YouTube通知は無効）
+            const results = await checkAndProcessAutoExit(db, false);
             
-            if (expiredSeats.length > 0) {
-              console.log(`[SSE] ${expiredSeats.length}件の期限切れ座席が見つかりました`);
-              
-              // 期限切れの座席を更新
-              for (const seat of expiredSeats) {
-                try {
-                  // 座席を空席に設定
-                  await db.collection('seats').updateOne(
-                    { _id: seat._id },
-                    { 
-                      $set: { 
-                        username: null, 
-                        authorId: null, 
-                        task: null, 
-                        enterTime: null, 
-                        autoExitScheduled: null,
-                        timestamp: new Date()
-                      } 
-                    }
-                  );
-                  console.log(`[SSE] ${seat.username}を自動退室しました (部屋: ${seat.room_id}, 座席: ${seat.position})`);
-                } catch (error) {
-                  console.error(`[SSE] 座席${seat._id}の自動退室処理中にエラーが発生しました:`, error);
-                }
-              }
+            // 処理結果をログ出力
+            if (results.processedCount > 0) {
+              console.log(`[SSE] ${results.processedCount}件の座席を自動退室処理しました`);
               
               // 更新後のデータをクライアントに送信（コントローラーがクローズされていないことを確認）
               if (!isControllerClosed) {
-                const updatedData = await fetchRoomData();
+                const updatedData = await fetchRoomData(db);
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(updatedData)}\n\n`));
+                
+                // システムメッセージも送信
+                controller.enqueue(encoder.encode(
+                  createSystemMessage(`${results.processedCount}人のユーザーが自動退室しました`, 'info')
+                ));
+                
                 console.log('[SSE] 自動退室後のデータをクライアントに送信しました');
               }
             } else {
@@ -618,65 +2936,151 @@ export async function GET() {
           }
         };
 
+        // Change Streamを設定する関数（再接続にも使用）
+        const setupChangeStream = async () => {
+          try {
+            // 既存のストリームがあれば閉じる
+            if (changeStream) {
+              await changeStream.close().catch((err: Error) => console.error('[SSE] Error closing previous change stream:', err));
+            }
+            
+            // 新しいストリームを作成
+            console.log('[SSE] Setting up MongoDB change stream');
+            changeStream = db.collection('seats').watch();
+            console.log('[SSE] Change stream initialized');
+            
+            // ChangeStreamマネージャーに自動退室チェック処理を登録
+            const startedNewCheck = manager.startAutoExitCheck(db, checkAutoExit);
+            if (startedNewCheck) {
+              console.log('[SSE] 自動退室チェックの実行を開始しました');
+            } else {
+              console.log('[SSE] 自動退室チェックは他の接続で実行中のため、新規には開始しません');
+            }
+            
+            // 変更検出イベントハンドラ
+            changeStream.on('change', async (changeEvent: ChangeStreamDocument) => {
+              // コントローラーがクローズされていないことを確認
+              if (isControllerClosed) {
+                console.log('[SSE] Controller is already closed, ignoring change event');
+                return;
+              }
+
+              console.log('[SSE] Change detected in seats collection:', JSON.stringify(changeEvent.operationType));
+              try {
+                console.log('[SSE] Fetching updated data after change');
+                const data = await fetchRoomData(db);
+                console.log('[SSE] Sending updated data to client');
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+              } catch (error) {
+                console.error('[SSE] Error processing change stream update:', error);
+                // エラーメッセージをクライアントに送信
+                if (!isControllerClosed) {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
+                  controller.enqueue(encoder.encode(
+                    createSystemMessage('データ更新中にエラーが発生しました', 'error')
+                  ));
+                }
+              }
+            });
+
+            // エラーイベントハンドラ（再接続ロジックを含む）
+            changeStream.on('error', async (error: Error) => {
+              console.error('[SSE] Change stream error:', error);
+              
+              // エラーメッセージをクライアントに送信
+              if (!isControllerClosed) {
+                controller.enqueue(encoder.encode(
+                  createSystemMessage('サーバーとの接続に問題が発生しました。再接続を試みています...', 'warning')
+                ));
+              }
+              
+              // ストリームを閉じる
+              console.log('[SSE] Closing change stream due to error');
+              if (changeStream) {
+                await changeStream.close().catch((err: Error) => console.error('[SSE] Error closing change stream:', err));
+              }
+              
+              // 最大再試行回数を超えていない場合は再接続
+              const MAX_RETRIES = 10;
+              if (changeStreamRetryCount < MAX_RETRIES && !isControllerClosed) {
+                changeStreamRetryCount++;
+                const delayMs = calculateBackoff(changeStreamRetryCount);
+                console.log(`[SSE] Will attempt to reconnect in ${delayMs}ms (retry ${changeStreamRetryCount}/${MAX_RETRIES})`);
+                
+                // 指数バックオフを使用して再接続
+                setTimeout(async () => {
+                  if (!isControllerClosed) {
+                    console.log(`[SSE] Attempting to reconnect to change stream (retry ${changeStreamRetryCount}/${MAX_RETRIES})`);
+                    try {
+                      await setupChangeStream();
+                      // 再接続成功したらリトライカウントをリセット
+                      changeStreamRetryCount = 0;
+                      console.log('[SSE] Successfully reconnected to change stream');
+                      
+                      // 接続回復メッセージ
+                      if (!isControllerClosed) {
+                        controller.enqueue(encoder.encode(
+                          createSystemMessage('サーバーとの接続が回復しました', 'info')
+                        ));
+                        
+                        // 最新データを送信
+                        const refreshedData = await fetchRoomData(db);
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(refreshedData)}\n\n`));
+                      }
+                    } catch (reconnectError) {
+                      console.error('[SSE] Failed to reconnect to change stream:', reconnectError);
+                    }
+                  }
+                }, delayMs);
+              } else if (!isControllerClosed) {
+                console.error(`[SSE] Maximum reconnection attempts (${MAX_RETRIES}) reached or controller closed`);
+                // 最終エラーメッセージ
+                controller.enqueue(encoder.encode(
+                  createSystemMessage('サーバーとの接続が失われました。ページを再読み込みしてください。', 'error')
+                ));
+              }
+            });
+            
+            // 正常に初期化されたらクローズカウントをリセット
+            changeStreamRetryCount = 0;
+          } catch (setupError) {
+            console.error('[SSE] Error setting up change stream:', setupError);
+            throw setupError;
+          }
+        };
+
         try {
-          // Send initial data
+          // 初期データを送信
           console.log('[SSE] Preparing to send initial data');
-          const initialData = await fetchRoomData();
+          const initialData = await fetchRoomData(db);
           console.log('[SSE] Sending initial data to client');
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialData)}\n\n`));
-
-          // Set up change stream
-          console.log('[SSE] Setting up MongoDB change stream');
-          const changeStream = db.collection('seats').watch();
-          console.log('[SSE] Change stream initialized');
           
-          // 自動退室チェックを定期的に実行（1分ごと）
-          const autoExitInterval = setInterval(checkAutoExit, 60000);
-          console.log('[SSE] 自動退室チェックを1分ごとに実行するよう設定しました');
+          // Change Streamを設定
+          await setupChangeStream();
           
-          changeStream.on('change', async (changeEvent) => {
-            // コントローラーがクローズされていないことを確認
-            if (isControllerClosed) {
-              console.log('[SSE] Controller is already closed, ignoring change event');
-              return;
-            }
-
-            console.log('[SSE] Change detected in seats collection:', JSON.stringify(changeEvent.operationType));
-            try {
-              console.log('[SSE] Fetching updated data after change');
-              const data = await fetchRoomData();
-              console.log('[SSE] Sending updated data to client');
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-            } catch (error) {
-              console.error('[SSE] Error processing change stream update:', error);
-              // エラーメッセージをクライアントに送信（コントローラーがクローズされていないことを確認）
-              if (!isControllerClosed) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
-              }
-            }
-          });
-
-          // Handle errors in the change stream
-          changeStream.on('error', (error) => {
-            console.error('[SSE] Change stream error:', error);
-            if (!isControllerClosed) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Connection error' })}\n\n`));
-            }
-            console.log('[SSE] Closing change stream due to error');
-            changeStream.close();
-          });
-
+          // クリーンアップ関数を返す
           return () => {
             console.log('[SSE] Stream cleanup - closing change stream');
-            isControllerClosed = true; // コントローラーがクローズされたことをマーク
-            changeStream.close();
-            // 自動退室チェックのインターバルをクリア
-            clearInterval(autoExitInterval);
-            console.log('[SSE] 自動退室チェックのインターバルをクリアしました');
+            isControllerClosed = true;
+            
+            if (changeStream) {
+              changeStream.close().catch((err: Error) => console.error('[SSE] Error closing change stream during cleanup:', err));
+            }
+            
+            // 接続の登録を解除して、必要に応じて自動退室チェックも停止
+            manager.unregisterConnection();
+            manager.stopAutoExitCheck();
+            
+            console.log('[SSE] Stream cleanup completed');
           };
         } catch (error) {
           console.error('[SSE] Error in stream start:', error);
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Stream initialization failed' })}\n\n`));
+          // エラーメッセージを送信
+          controller.enqueue(encoder.encode(
+            createSystemMessage('ストリームの初期化に失敗しました。ページを再読み込みしてください。', 'error')
+          ));
+          throw error;
         }
       }
     });
@@ -702,10 +3106,8 @@ export async function GET() {
 <file path="app/api/youtube-comments/route.ts">
 import { NextResponse } from 'next/server';
 // CommonJS形式のライブラリをインポート
-import { getLiveChatMessages, getLiveChatId, sendChatMessage } from '@/lib/youtube';
-import clientPromise from '@/lib/mongodb';
+import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
 import { detectCommand } from '@/lib/utils';
-import { messageTemplates } from '@/lib/messages';
 
 // インメモリキャッシュ（サーバー再起動時にリセットされます）
 const liveChatIdCache: Record<string, string> = {};
@@ -726,10 +3128,14 @@ interface ChatItem {
   };
 }
 
+/**
+ * YouTubeライブコメント取得API
+ * コメント取得のみを担当し、コマンド実行（DB更新）は行わない
+ */
 export async function GET() {
   try {
     // 環境変数から動画IDを取得
-    console.log('コメント取得開始')
+    console.log('[Comments API] コメント取得開始');
     const videoId = process.env.YOUTUBE_VIDEO_ID;
     // BOTのチャンネルID（環境変数から取得または直接指定）
     const botChannelId = process.env.YOUTUBE_BOT_CHANNEL_ID || '';
@@ -743,19 +3149,19 @@ export async function GET() {
     
     // キャッシュにない場合のみAPIを呼び出し
     if (!liveChatId) {
-      console.log(`[API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
+      console.log(`[Comments API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
       const fetchedLiveChatId = await getLiveChatId(videoId);
       
       if (fetchedLiveChatId) {
         // キャッシュに保存
         liveChatId = fetchedLiveChatId;
-        console.log(`[API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
+        console.log(`[Comments API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
         liveChatIdCache[videoId] = liveChatId;
       } else {
         return NextResponse.json({ error: 'ライブチャットIDが取得できませんでした' }, { status: 404 });
       }
     } else {
-      console.log(`[API] キャッシュからliveChatIdを取得しました (videoId: ${videoId}, liveChatId: ${liveChatId})`);
+      console.log(`[Comments API] キャッシュからliveChatIdを取得しました (videoId: ${videoId}, liveChatId: ${liveChatId})`);
     }
     
     // ページトークンをクエリから取得（初回は null）
@@ -764,12 +3170,10 @@ export async function GET() {
     // コメントデータを取得
     const chatData = await getLiveChatMessages(liveChatId, pageToken);
     
-    // MongoDB接続
-    const client = await clientPromise;
-    const db = client.db('coworking');
-    const seatsCollection = db.collection('seats');
+    // 検出済みコマンドの配列を準備
+    const detectedCommands = [];
     
-    // コメントごとにコマンド処理を行う
+    // コメントごとにコマンド検出を行う
     for (const item of chatData.items || []) {
       const commentId = item.id;
       const commentText = item.snippet?.displayMessage || '';
@@ -782,156 +3186,37 @@ export async function GET() {
       // 3. BOT自身の投稿
       if (!authorName || !authorId) continue; // 投稿者情報がない場合はスキップ
       if (processedCommentIds.has(commentId)) {
-        console.log(`[Command] スキップ: 既に処理済みのコメント (ID: ${commentId})`);
+        console.log(`[Comments API] スキップ: 既に処理済みのコメント (ID: ${commentId})`);
         continue;
       }
       if (botChannelId && authorId === botChannelId) {
-        console.log(`[Command] スキップ: BOT自身の投稿 (ID: ${commentId})`);
+        console.log(`[Comments API] スキップ: BOT自身の投稿 (ID: ${commentId})`);
         // BOT自身の投稿はセットに追加して今後処理しないようにする
         processedCommentIds.add(commentId);
         continue;
       }
       
-      console.log(`[Command] コメント検出: ${authorName} - ${commentText}`);
+      console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
       
       // コマンド検出
       const { command, taskName } = detectCommand(commentText);
       
-      if (command === 'work' && taskName) {
-        console.log(`[Command] /work コマンド検出: ${authorName} - タスク: ${taskName}`);
+      if (command) {
+        // コマンドを検出した場合、コマンド情報を配列に追加
+        detectedCommands.push({
+          command,
+          taskName,
+          authorName,
+          authorId,
+          commentId,
+          commentText
+        });
         
-        try {
-          // ユーザーが既に入室済みか確認
-          const existingSeat = await seatsCollection.findOne({ authorId });
-          
-          const enterTime = new Date();
-          const autoExitTime = new Date(enterTime);
-          autoExitTime.setHours(autoExitTime.getHours() + 2); // 2時間後
-          
-          if (existingSeat) {
-            // 既に入室済みの場合：タスクと時間を更新
-            await seatsCollection.updateOne(
-              { _id: existingSeat._id },
-              { 
-                $set: { 
-                  task: taskName, 
-                  enterTime: enterTime, 
-                  autoExitScheduled: autoExitTime,
-                  username: authorName, // 名前が変わっている可能性も考慮
-                  timestamp: new Date()
-                } 
-              }
-            );
-            console.log(`[Command] ${authorName} のタスクを ${taskName} に更新しました`);
-            
-            // タスク更新メッセージを送信
-            // await sendChatMessage(liveChatId, messageTemplates.taskUpdated(authorName, taskName));
-          } else {
-            // 新規入室の場合：空いている座席を探す
-            const availableSeat = await seatsCollection.findOneAndUpdate(
-              { username: null }, // 空席を探す
-              { 
-                $set: {
-                  username: authorName,
-                  authorId: authorId, // チャンネルIDも保存
-                  task: taskName,
-                  enterTime: enterTime,
-                  autoExitScheduled: autoExitTime,
-                  timestamp: new Date()
-                }
-              },
-              { sort: { position: 1 }, returnDocument: 'after' } // position昇順で最初の空席を取得
-            );
-            
-            if (availableSeat.value) {
-              console.log(`[Command] ${authorName} が座席 ${availableSeat.value.position} に入室しました (タスク: ${taskName})`);
-              
-              // 入室メッセージを送信
-              // await sendChatMessage(
-              //   liveChatId, 
-              //   messageTemplates.seatTaken(authorName, availableSeat.value.room_id, availableSeat.value.position, taskName)
-              // );
-            } else {
-              // 空席がない場合は新しい座席を作成する
-              // 最大の座席番号と部屋番号を取得
-              const lastSeat = await seatsCollection.find().sort({ position: -1 }).limit(1).toArray();
-              const lastRoomSeat = await seatsCollection.find().sort({ room_id: -1 }).limit(1).toArray();
-              
-              const newPosition = lastSeat.length > 0 ? lastSeat[0].position + 1 : 1;
-              const newRoomId = lastRoomSeat.length > 0 ? lastRoomSeat[0].room_id : 1;
-              
-              // 新しい座席を作成
-              const newSeat = {
-                position: newPosition,
-                room_id: newRoomId,
-                username: authorName,
-                authorId: authorId,
-                task: taskName,
-                enterTime: enterTime,
-                autoExitScheduled: autoExitTime,
-                timestamp: new Date()
-              };
-              
-              const insertResult = await seatsCollection.insertOne(newSeat);
-              console.log(`[Command] 新しい座席を作成しました: 部屋 ${newRoomId}, 座席 ${newPosition} に ${authorName} が入室しました (タスク: ${taskName})`);
-              
-              // 入室メッセージを送信
-              // await sendChatMessage(
-              //   liveChatId, 
-              //   messageTemplates.seatTaken(authorName, newRoomId, newPosition, taskName)
-              // );
-            }
-          }
-        } catch (error) {
-          console.error(`[Command] ${authorName} の入室処理中にエラーが発生しました:`, error);
-          // エラーが発生した場合は処理済みとマークしない
-          continue;
-        }
-      } else if (command === 'finish') {
-        console.log(`[Command] /finish コマンド検出: ${authorName}`);
+        console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
         
-        try {
-          // ユーザーの座席を検索
-          const result = await seatsCollection.findOneAndUpdate(
-            { authorId },
-            { 
-              $set: { 
-                username: null, 
-                authorId: null, 
-                task: null, 
-                enterTime: null, 
-                autoExitScheduled: null,
-                timestamp: new Date()
-              } 
-            },
-            { returnDocument: 'before' } // 更新前の情報を取得
-          );
-          
-          if (result.value && result.value.username) {
-            console.log(`[Command] ${authorName} が退室しました`);
-            
-            // 退室メッセージを送信
-            // await sendChatMessage(
-            //   liveChatId, 
-            //   messageTemplates.seatVacated(authorName, result.value.room_id, result.value.position)
-            // );
-          } else {
-            console.log(`[Command] ${authorName} は入室していません`);
-            // 入室していない場合は特に何もしない
-          }
-        } catch (error) {
-          console.error(`[Command] ${authorName} の退室処理中にエラーが発生しました:`, error);
-          // エラーが発生した場合は処理済みとマークしない
-          continue;
-        }
-      } else {
-        // コマンドがないコメントの場合
-        console.log(`[Command] コマンドなし: ${commentText}`);
+        // 処理済みとしてマーク
+        processedCommentIds.add(commentId);
       }
-      
-      // コマンド処理が完了したら、処理済みリストに追加
-      processedCommentIds.add(commentId);
-      console.log(`[Command] コメントを処理済みとしてマーク (ID: ${commentId})`);
     }
     
     // 処理済みID数が多くなりすぎないように、最新の1000件だけを保持
@@ -939,7 +3224,7 @@ export async function GET() {
       const idsToKeep = Array.from(processedCommentIds).slice(-1000);
       processedCommentIds.clear();
       idsToKeep.forEach(id => processedCommentIds.add(id));
-      console.log(`[Command] 処理済みIDキャッシュをクリーンアップしました (残り: ${processedCommentIds.size}件)`);
+      console.log(`[Comments API] 処理済みIDキャッシュをクリーンアップしました (残り: ${processedCommentIds.size}件)`);
     }
     
     // コメントデータを整形 (UI表示用)
@@ -953,12 +3238,13 @@ export async function GET() {
     
     return NextResponse.json({
       comments,
+      commands: detectedCommands,
       nextPageToken: chatData.nextPageToken,
       pollingIntervalMillis: chatData.pollingIntervalMillis || 5000
     });
     
   } catch (error) {
-    console.error('YouTube API エラー:', error);
+    console.error('[Comments API] YouTube API エラー:', error);
     return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
   }
 }
@@ -1119,81 +3405,127 @@ import { Card } from "@/components/ui/card";
 import FocusRoom from "@/components/FocusRoom";
 import Header from "@/components/Header";
 import BGMPlayer from "@/components/BGMPlayer";
-
-interface Seat {
-  id: string;
-  username: string | null;
-  task?: string | null;
-  enterTime?: Date | string | null;
-  autoExitScheduled?: Date | string | null;
-  timestamp: Date | string;
-}
-
-interface RoomData {
-  id: string;
-  seats: Seat[];
-  type?: 'focus' | 'chat'; // フォーカスルームか会話可能なルームかを区別
-}
+import { toast } from "@/hooks/use-toast";
+import { useSeatData } from "@/hooks/use-seat-data";
+import { AlertCircle, WifiOff, Loader2 } from "lucide-react";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Command } from "@/lib/types";
 
 export default function Home() {
-  const [rooms, setRooms] = useState<RoomData[]>([]);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  // SSEから座席データを取得
+  const { rooms, isLoading, connectionState, refreshData } = useSeatData();
+  
+  // コマンド処理の状態管理
+  const [isProcessingCommand, setIsProcessingCommand] = useState(false);
+  const processingCommandsRef = useRef<Set<string>>(new Set());
   
   useEffect(() => {
-    // Connect to SSE endpoint for real-time updates
-    const connectSSE = () => {
-      // 既存の接続があれば閉じる
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-      
-      const eventSource = new EventSource('/api/sse');
-      eventSourceRef.current = eventSource;
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log('SSEから受信したデータ:', data); 
-          
-          if (data.rooms && Array.isArray(data.rooms)) {
-            console.log(`SSEから${data.rooms.length}部屋のデータを受信しました`);
-            if (data.rooms.length > 0) {
-              console.log('最初の部屋のシート数:', data.rooms[0].seats?.length || 0);
-            }
-            setRooms(data.rooms);
-          } else {
-            console.error('SSEから有効なrooms配列を受信できませんでした:', data);
-          }
-        } catch (err) {
-          console.error('SSEデータの解析エラー:', err, event.data);
-        }
-      };
-
-      eventSource.onerror = (error) => {
-        console.error('SSE Error:', error);
-        eventSource.close();
-        
-        // エラー発生時には30秒後に再接続を試みる
-        setTimeout(() => {
-          console.log('SSE再接続を試みます...');
-          setRooms([]); // 状態をリセット
-          connectSSE(); // 再接続
-        }, 30000);
-      };
-    };
-    
-    // 初回接続
-    connectSSE();
-    
-    // YouTubeコメント取得のポーリング追加
+    // YouTubeコメント取得のポーリング
     const fetchYoutubeComments = async () => {
       try {
         console.log('YouTubeコメントの取得を開始');
         const response = await fetch('/api/youtube-comments');
+        
+        if (!response.ok) {
+          throw new Error(`YouTube API responded with status: ${response.status}`);
+        }
+        
         const data = await response.json();
-        console.log('YouTubeコメントの取得結果:', data);
+        
+        // コマンドを処理（あれば）
+        if (data.commands && Array.isArray(data.commands) && data.commands.length > 0) {
+          console.log(`${data.commands.length}件のコマンドを検出しました:`, data.commands);
+          setIsProcessingCommand(true);
+          
+          // 各コマンドを処理
+          for (const cmd of data.commands) {
+            await processCommand(cmd);
+          }
+          
+          setIsProcessingCommand(false);
+        }
       } catch (error) {
         console.error('YouTubeコメント取得エラー:', error);
+        toast({
+          title: 'YouTubeコメント取得エラー',
+          description: (error as Error).message,
+          variant: 'destructive',
+        });
+      }
+    };
+    
+    // コマンドをAPI経由で処理する関数
+    const processCommand = async (command: Command) => {
+      // 既に処理中のコマンドかチェック（二重実行防止）
+      if (processingCommandsRef.current.has(command.commentId)) {
+        console.log(`コマンドID ${command.commentId} は既に処理中のためスキップします`);
+        return;
+      }
+      
+      // 処理中としてマーク
+      processingCommandsRef.current.add(command.commentId);
+      
+      try {
+        console.log(`コマンド処理: ${command.command} by ${command.authorName}`);
+        
+        // コマンド実行APIをコール
+        const response = await fetch('/api/commands', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            command: command.command,
+            username: command.authorName,
+            authorId: command.authorId,
+            videoId: command.commentId.split('_')[0], // コメントIDからビデオID部分を抽出
+            taskName: command.taskName
+          }),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Command API responded with status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.success) {
+          console.log(`コマンド ${command.command} の処理成功:`, result);
+          
+          // 成功時に通知表示
+          if (command.command === 'work') {
+            toast({
+              title: `${command.authorName} が入室しました`,
+              description: `タスク: ${command.taskName || '未設定'}`,
+              variant: 'default',
+            });
+          } else if (command.command === 'finish') {
+            toast({
+              title: `${command.authorName} が退室しました`,
+              variant: 'default',
+            });
+          }
+        } else {
+          console.error(`コマンド ${command.command} の処理に失敗:`, result.error);
+          toast({
+            title: 'コマンド処理エラー',
+            description: result.error || '不明なエラーが発生しました',
+            variant: 'destructive',
+          });
+        }
+      } catch (error) {
+        console.error('コマンド処理中にエラーが発生:', error);
+        toast({
+          title: 'コマンド処理エラー',
+          description: (error as Error).message || 'サーバーとの通信中にエラーが発生しました',
+          variant: 'destructive',
+        });
+      } finally {
+        // 処理が完了したらセットから削除（一定時間後）
+        setTimeout(() => {
+          processingCommandsRef.current.delete(command.commentId);
+        }, 10000); // 10秒後に削除
       }
     };
     
@@ -1204,9 +3536,6 @@ export default function Home() {
     const commentInterval = setInterval(fetchYoutubeComments, 10000);
 
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
       clearInterval(commentInterval);
     };
   }, []);
@@ -1215,6 +3544,61 @@ export default function Home() {
   const focusRooms = rooms.filter(room => room.type === 'focus');
   const chatRooms = rooms.filter(room => room.type === 'chat' || !room.type);
 
+  // 接続状態に応じたメッセージを表示
+  const renderConnectionStatus = () => {
+    switch (connectionState) {
+      case 'connecting':
+        return (
+          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+            <AlertTitle>接続中...</AlertTitle>
+            <AlertDescription>サーバーに接続しています。しばらくお待ちください。</AlertDescription>
+          </Alert>
+        );
+      case 'reconnecting':
+        return (
+          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+            <AlertTitle>再接続中...</AlertTitle>
+            <AlertDescription>
+              サーバーとの接続が切断されました。再接続を試みています。
+              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
+                今すぐ再接続
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      case 'error':
+        return (
+          <Alert variant="destructive" className="mb-4">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>接続エラー</AlertTitle>
+            <AlertDescription>
+              サーバーとの接続中にエラーが発生しました。
+              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
+                再接続する
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      case 'disconnected':
+        return (
+          <Alert className="mb-4 bg-gray-100 border-gray-200">
+            <WifiOff className="h-4 w-4 text-gray-500" />
+            <AlertTitle>切断されました</AlertTitle>
+            <AlertDescription>
+              サーバーとの接続が終了しました。
+              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
+                再接続する
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <main className="min-h-screen bg-[#505762] pt-20">
       {/* ヘッダー */}
@@ -1222,12 +3606,21 @@ export default function Home() {
       
       {/* メインコンテンツ */}
       <div className="container mx-auto px-4 py-4 pt-24">
+        {/* 接続状態表示 */}
+        {renderConnectionStatus()}
+      
         {/* 参加者情報 */}
         <Card className="mb-4 bg-[#f2f2f2]/95 shadow-md">
           <div className="p-4">
             <h2 className="font-medium text-lg mb-2">現在の参加者</h2>
             <div className="flex items-center gap-2 text-muted-foreground">
-              <span>オンライン: 24人</span>
+              <span>オンライン: {rooms.flatMap(room => room.seats?.filter(seat => seat.username) || []).length}人</span>
+              {isProcessingCommand && (
+                <span className="flex items-center text-sm text-blue-500">
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  コマンド処理中...
+                </span>
+              )}
             </div>
             <div className="flex flex-wrap gap-2 mt-3">
               <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">すべて</button>
@@ -1242,7 +3635,7 @@ export default function Home() {
         
         {/* フォーカスルーム */}
         <div className="mb-4">
-          {rooms.length > 0 && rooms.some(room => room.seats && room.seats.length > 0) ? (
+          {!isLoading && rooms.length > 0 && rooms.some(room => room.seats && room.seats.length > 0) ? (
             // SSEから受け取ったデータを使用
             // すべての座席を一つのフォーカスルームとして表示
             <FocusRoom 
@@ -1252,6 +3645,7 @@ export default function Home() {
           ) : (
             // データロード中の表示
             <div className="bg-[#f2f2f2]/95 rounded-lg p-8 text-center text-gray-600">
+              <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin text-gray-400" />
               座席情報を読み込み中...
             </div>
           )}
@@ -5665,6 +8059,8 @@ import { useEffect, useState } from "react";
 import { format } from "date-fns";
 import { ja } from "date-fns/locale";
 import { Clock } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { usePomodoro } from "@/hooks/use-pomodoro";
 
 // ヘッダー用に簡略化したタイマー情報
 const POMODORO_MODES = {
@@ -5753,151 +8149,66 @@ export default function Header() {
   const [mounted, setMounted] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   
-  // ポモドーロの状態を取得
-  const [pomodoroState, setPomodoroState] = useState({
-    mode: "WORK",
-    timeLeft: formatTime(POMODORO_MODES.WORK.duration), // 初期値を計算
-    progress: 0
-  });
+  // ポモドーロタイマーの状態を取得
+  const {
+    mode,
+    formattedTimeLeft,
+    isActive,
+    progress,
+    currentMode
+  } = usePomodoro();
 
   // マウント状態を設定
   useEffect(() => {
     setMounted(true);
-    console.log("ヘッダーコンポーネントがマウントされました");
     
-    // マウント時に初期値を設定（ページ読み込み時の初期表示用）
-    if (typeof window !== "undefined") {
-      try {
-        // 現在時刻から適切なモードと残り時間を取得
-        const now = new Date();
-        const { mode, timeLeft } = determineTimeModeFromCurrentTime(now);
-        
-        console.log("時刻ベースのモード計算:", { mode, timeLeft, 現在時刻: now });
-        
-        // localStorage更新
-        localStorage.setItem("pomodoroMode", mode);
-        localStorage.setItem("pomodoroTimeLeft", timeLeft.toString());
-        localStorage.setItem("pomodoroActive", "true");
-        
-        // 進捗状況の計算
-        const modeObj = POMODORO_MODES[mode as keyof typeof POMODORO_MODES];
-        const totalDuration = modeObj.duration;
-        const maxTimeLeft = mode === "WORK" ? 25 * 60 : 5 * 60; // モードに応じた最大時間
-        const progress = 100 - (timeLeft / maxTimeLeft) * 100;
-        
-        console.log("ヘッダー初期設定:", {
-          mode,
-          timeLeft,
-          formattedTime: formatTime(timeLeft),
-          progress: Math.min(Math.max(progress, 0), 100)
-        });
-        
-        setPomodoroState({
-          mode: mode as keyof typeof POMODORO_MODES,
-          timeLeft: formatTime(timeLeft),
-          progress: Math.min(Math.max(progress, 0), 100)
-        });
-      } catch (error) {
-        console.error("ヘッダー初期設定エラー:", error);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    // クライアントサイドでのみ実行されるタイマー
-    if (!mounted) return;
-    
-    console.log("ヘッダータイマー監視が開始されました");
-    
-    // 500msごとに時間を更新（更新頻度を下げて競合を減らす）
+    // 現在時刻を更新するタイマー
     const timer = setInterval(() => {
-      const now = new Date();
-      setCurrentTime(now);
-      
-      // 現在時刻から適切なモードと残り時間を取得
-      const { mode, timeLeft } = determineTimeModeFromCurrentTime(now);
-      
-      // localStorage更新（現在時刻ベースのモードを優先）
-      localStorage.setItem("pomodoroMode", mode);
-      localStorage.setItem("pomodoroTimeLeft", timeLeft.toString());
-      localStorage.setItem("pomodoroActive", "true");
-      
-      // 進捗状況の計算
-      const modeObj = POMODORO_MODES[mode as keyof typeof POMODORO_MODES];
-      const maxTimeLeft = mode === "WORK" ? 25 * 60 : 5 * 60; // モードに応じた最大時間
-      const progress = 100 - (timeLeft / maxTimeLeft) * 100;
-      
-      const formattedTime = formatTime(timeLeft);
-      
-      // 状態が変わった場合のみ更新とログ出力（パフォーマンス向上）
-      if (pomodoroState.timeLeft !== formattedTime || pomodoroState.mode !== mode) {
-        // 10秒に1回だけ詳細ログを出力（頻度を減らす）
-        if (Math.floor(Date.now() / 10000) % 1 === 0) {
-          console.log("ヘッダータイマー更新:", {
-            mode,
-            timeLeft,
-            formattedTime,
-            progress: Math.min(Math.max(progress, 0), 100)
-          });
-        }
-        
-        setPomodoroState({
-          mode: mode as keyof typeof POMODORO_MODES,
-          timeLeft: formattedTime,
-          progress: Math.min(Math.max(progress, 0), 100) // 0-100の範囲に制限
-        });
-      }
-    }, 500); // 更新頻度を500msに設定
-
+      setCurrentTime(new Date());
+    }, 1000);
+    
     return () => {
       clearInterval(timer);
     };
-  }, [mounted]); // pomodoroState.mode, pomodoroState.timeLeftを依存配列から削除
+  }, []);
 
   // 曜日と日付のフォーマット
   const dateString = format(currentTime, "yyyy年MM月dd日(E)", { locale: ja });
   
   // 時間のフォーマット - サーバー側とクライアント側で一致させるため、mounted状態に応じて出し分け
   const timeString = mounted ? format(currentTime, "HH:mm:ss") : "--:--:--";
-  
-  // 使用するモードの色情報
-  const modeColors = POMODORO_MODES[pomodoroState.mode as keyof typeof POMODORO_MODES];
 
   return (
-    <header className="w-full py-4 bg-[#505762] border-b border-[#404550] fixed top-0 z-10">
-      <div className="container mx-auto px-4">
-        <div className="flex justify-between items-center">
-          {/* サイトタイトルを中央に配置 */}
-          <div className="flex-1"></div>
-          <div className="flex-1 flex justify-center">
-            <h1 className="text-3xl font-bold text-amber-400">CONNECT</h1>
+    <header className="fixed top-0 w-full h-16 border-b bg-background/70 backdrop-blur-md z-10">
+      <div className="container h-full flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <h1 className="font-bold text-xl">CONNECT</h1>
+          <div className="hidden md:flex gap-6 text-sm text-muted-foreground">
+            <a href="/" className="hover:text-foreground transition">メイン</a>
+            <a href="#about" className="hover:text-foreground transition">About</a>
+            <a href="#guide" className="hover:text-foreground transition">ガイド</a>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          {/* ポモドーロタイマー情報 */}
+          <div className="hidden md:flex items-center gap-2">
+            <Badge 
+              variant="outline" 
+              className={`${currentMode.color} text-white`}
+            >
+              {currentMode.name}
+            </Badge>
+            <span className="text-sm font-medium">{formattedTimeLeft}</span>
           </div>
           
-          {/* 現在時刻 */}
-          <div className="flex-1 flex justify-end">
-            <div className="flex items-center gap-4 text-white">
-              <div className="flex gap-2 items-center">
-                <Clock className="h-5 w-5" />
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium">{mounted ? dateString : "--"}</span>
-                  <span className="text-xl font-mono">{timeString}</span>
-                </div>
-              </div>
-              
-              {/* ポモドーロタイマー表示 */}
-              <div className="flex flex-col items-end border-l border-white/20 pl-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">ポモドーロタイマー</span>
-                  <span className={`${modeColors.badgeColor} text-white px-2 py-0.5 text-xs rounded`}>
-                    {modeColors.name}
-                  </span>
-                </div>
-                <div className="text-xl font-mono">{pomodoroState.timeLeft}</div>
-                <div className="w-full h-1 bg-gray-500/30 rounded-full mt-1">
-                  <div className={`h-full ${modeColors.bgColor} rounded-full`} style={{ width: `${pomodoroState.progress}%` }}></div>
-                </div>
-              </div>
-            </div>
+          {/* 現在時刻表示 */}
+          <div className="flex items-center gap-2 text-sm">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">{timeString}</span>
+            <span className="hidden md:inline text-xs text-muted-foreground">
+              {dateString}
+            </span>
           </div>
         </div>
       </div>
@@ -5909,7 +8220,6 @@ export default function Header() {
 <file path="components/PomodoroTimer.tsx">
 "use client";
 
-import { useState, useEffect } from "react";
 import { Play, Pause, RefreshCw, Coffee, TimerIcon, Brain } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -5925,611 +8235,128 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
-
-// ポモドーロタイマーの設定
-const MODES = {
-  WORK: {
-    name: "作業中",
-    duration: 25 * 60, // 25分（秒単位）
-    color: "bg-amber-500",
-    nextMode: "BREAK",
-    nextName: "休憩"
-  },
-  BREAK: {
-    name: "休憩中",
-    duration: 5 * 60, // 5分（秒単位）
-    color: "bg-green-500",
-    nextMode: "WORK",
-    nextName: "作業"
-  },
-  LONG_BREAK: {
-    name: "長休憩",
-    duration: 15 * 60, // 15分（秒単位）
-    color: "bg-blue-500",
-    nextMode: "WORK",
-    nextName: "作業"
-  }
-};
-
-// 現在時刻に基づいてモードを判定する関数
-const determineTimeModeFromCurrentTime = (now: Date): {mode: TimerMode, timeLeft: number} => {
-  const minutes = now.getMinutes();
-  const seconds = now.getSeconds();
-  
-  // 55-59分は休憩モード
-  if (minutes >= 55 && minutes <= 59) {
-    // 残り時間を計算（60分 - 現在分:秒）
-    const nextHour = new Date(now);
-    nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
-    const timeLeftMs = nextHour.getTime() - now.getTime();
-    const timeLeftSec = Math.ceil(timeLeftMs / 1000);
-    return { mode: "BREAK", timeLeft: timeLeftSec };
-  }
-  
-  // 25-29分は休憩モード
-  if (minutes >= 25 && minutes <= 29) {
-    // 残り時間を計算（30分 - 現在分:秒）
-    const nextHalfHour = new Date(now);
-    nextHalfHour.setMinutes(30, 0, 0);
-    const timeLeftMs = nextHalfHour.getTime() - now.getTime();
-    const timeLeftSec = Math.ceil(timeLeftMs / 1000);
-    return { mode: "BREAK", timeLeft: timeLeftSec };
-  }
-  
-  // それ以外はフォーカスモード
-  // 残り時間の計算（次の休憩時間までの時間）
-  let targetMinute = 25;
-  if (minutes >= 30 && minutes < 55) {
-    targetMinute = 55;
-  } else if (minutes >= 0 && minutes < 25) {
-    targetMinute = 25;
-  }
-  
-  const nextTarget = new Date(now);
-  nextTarget.setMinutes(targetMinute, 0, 0);
-  
-  // 既に目標時間を過ぎている場合は次の時間帯に調整
-  if (nextTarget.getTime() <= now.getTime()) {
-    nextTarget.setHours(nextTarget.getHours() + 1);
-  }
-  
-  const timeLeftMs = nextTarget.getTime() - now.getTime();
-  const timeLeftSec = Math.ceil(timeLeftMs / 1000);
-  
-  return { mode: "WORK", timeLeft: timeLeftSec };
-};
-
-// デバッグ: モード設定の確認
-console.log("ポモドーロモード設定:", {
-  WORK: MODES.WORK,
-  BREAK: MODES.BREAK,
-  LONG_BREAK: MODES.LONG_BREAK
-});
-
-type TimerMode = "WORK" | "BREAK" | "LONG_BREAK";
+import { usePomodoro } from "@/hooks/use-pomodoro";
+import { POMODORO_MODES, TimerMode } from "@/lib/store";
 
 export default function PomodoroTimer() {
-  const [mounted, setMounted] = useState(false);
-  const [mode, setMode] = useState<TimerMode>("WORK");
-  const [timeLeft, setTimeLeft] = useState<number>(MODES.WORK.duration);
-  const [isActive, setIsActive] = useState<boolean>(true); // デフォルトで自動実行に変更
-  const [workSessionsCompleted, setWorkSessionsCompleted] = useState<number>(0);
-  // 最後に時刻ベースの更新を行った時間を記録
-  const [lastTimeBasedUpdate, setLastTimeBasedUpdate] = useState<number>(Date.now());
-
-  // クライアントサイドのマウント完了後に状態を初期化
-  useEffect(() => {
-    console.log("ポモドーロタイマー:マウント処理開始");
-    
-    // ブラウザ環境でのみ実行される処理
-    if (typeof window !== "undefined") {
-      // マウント状態を設定
-      setMounted(true);
-      
-      try {
-        // 現在時刻から適切なモードと残り時間を取得
-        const now = new Date();
-        const { mode: timeBasedMode, timeLeft: timeBasedTimeLeft } = determineTimeModeFromCurrentTime(now);
-        
-        console.log("初期読み込み - 時刻ベースのモード計算:", {
-          mode: timeBasedMode,
-          timeLeft: timeBasedTimeLeft,
-          現在時刻: now.toLocaleTimeString()
-        });
-        
-        // 現在時刻ベースの値で初期化
-        setMode(timeBasedMode);
-        setTimeLeft(timeBasedTimeLeft);
-        setIsActive(true);
-        
-        // ローカルストレージを更新
-        localStorage.setItem("pomodoroMode", timeBasedMode);
-        localStorage.setItem("pomodoroTimeLeft", timeBasedTimeLeft.toString());
-        localStorage.setItem("pomodoroActive", "true");
-        localStorage.setItem("pomodoroSessions", "0");
-        
-        // タイトルを更新
-        document.title = `▶ ${formatTime(timeBasedTimeLeft)} - ${MODES[timeBasedMode].name}`;
-        
-        // 最後の更新時間を記録
-        setLastTimeBasedUpdate(Date.now());
-      } catch (error) {
-        // エラーが発生した場合はデフォルト値を使用
-        console.error("時刻ベースモード計算エラー:", error);
-        clearStorage(); // 既存の完全リセット関数を使用
-      }
-    }
-  }, []); // 空の依存配列で初回マウント時のみ実行
-
-  // 時刻ベースのモード自動更新
-  useEffect(() => {
-    if (!mounted) return;
-    
-    console.log("時刻ベースのモード自動更新の監視を開始");
-    
-    const timeUpdateInterval = setInterval(() => {
-      const now = Date.now();
-      // 2秒以上経過している場合のみ時刻ベースの更新を行う（頻繁な更新を避ける）
-      if (now - lastTimeBasedUpdate >= 2000) {
-        const currentDate = new Date();
-        const { mode: newMode, timeLeft: newTimeLeft } = determineTimeModeFromCurrentTime(currentDate);
-        
-        // モードが変わった場合、または同じモードでも残り時間に15秒以上の差がある場合に更新
-        const shouldUpdate = 
-          newMode !== mode || 
-          Math.abs(newTimeLeft - timeLeft) > 15;
-        
-        if (shouldUpdate) {
-          console.log("時刻ベースのモード/時間を更新:", {
-            前回のモード: mode,
-            新しいモード: newMode,
-            前回の残り時間: timeLeft,
-            新しい残り時間: newTimeLeft,
-            現在時刻: currentDate.toLocaleTimeString()
-          });
-          
-          setMode(newMode);
-          setTimeLeft(newTimeLeft);
-          setIsActive(true);
-          
-          // localStorage更新
-          localStorage.setItem("pomodoroMode", newMode);
-          localStorage.setItem("pomodoroTimeLeft", newTimeLeft.toString());
-          localStorage.setItem("pomodoroActive", "true");
-          
-          // タイトルも更新
-          document.title = `▶ ${formatTime(newTimeLeft)} - ${MODES[newMode].name}`;
-          
-          // 最後の更新時間を記録
-          setLastTimeBasedUpdate(now);
-        }
-      }
-    }, 1000); // 1秒ごとにチェック
-    
-    return () => {
-      clearInterval(timeUpdateInterval);
-    };
-  }, [mounted, mode, timeLeft, lastTimeBasedUpdate]);
-
-  // デバッグ用: 状態変更のログ出力
-  useEffect(() => {
-    if (mounted) {
-      console.log("タイマー状態が更新されました:", {
-        mode,
-        timeLeft,
-        formattedTimeLeft: formatTime(timeLeft),
-        isActive,
-        workSessionsCompleted,
-        localStorage: {
-          mode: localStorage.getItem("pomodoroMode"),
-          timeLeft: localStorage.getItem("pomodoroTimeLeft"),
-          active: localStorage.getItem("pomodoroActive"),
-          sessions: localStorage.getItem("pomodoroSessions")
-        }
-      });
-    }
-  }, [mounted, mode, timeLeft, isActive, workSessionsCompleted]);
-
-  // タイマーの進行（従来の手動操作時用）
-  useEffect(() => {
-    if (!mounted) return;
-    
-    console.log("タイマー進行の条件チェック:", { isActive, timeLeft, mode });
-    
-    let intervalId: NodeJS.Timeout | null = null;
-    
-    if (isActive && timeLeft > 0) {
-      console.log("タイマー開始", new Date().toISOString(), "残り時間:", formatTime(timeLeft));
-      
-      // 前回の時間記録
-      let lastUpdateTime = Date.now();
-      
-      // 100msごとに更新 - スムーズなカウントダウンと正確さのために短い間隔を使用
-      intervalId = setInterval(() => {
-        const now = Date.now();
-        
-        // 時刻ベースの更新からの経過時間をチェック
-        // 3秒以内に時刻ベースの更新があった場合はこのカウントダウンをスキップ
-        if (now - lastTimeBasedUpdate < 3000) {
-          return;
-        }
-        
-        const delta = Math.floor((now - lastUpdateTime) / 1000); // 経過秒数を計算
-        
-        if (delta >= 1) {
-          // 1秒以上経過した場合のみ更新
-          lastUpdateTime = now - ((now - lastUpdateTime) % 1000); // 余りを考慮して調整
-          
-          setTimeLeft((prevTime) => {
-            const newTime = Math.max(prevTime - delta, 0);
-            console.log(`カウントダウン実行: ${formatTime(prevTime)} -> ${formatTime(newTime)} (${delta}秒減少)`);
-            
-            // localStorageに保存
-            localStorage.setItem("pomodoroTimeLeft", newTime.toString());
-            
-            // タイトル更新
-            if (isActive) {
-              document.title = `▶ ${formatTime(newTime)} - ${MODES[mode].name}`;
-            } else {
-              document.title = `CONNECT - ${formatTime(newTime)}`;
-            }
-            
-            // 終了判定
-            if (newTime === 0) {
-              console.log("タイマー終了");
-              clearInterval(intervalId!);
-              
-              // 次のモードを現在時刻から判定
-              const { mode: nextTimeBasedMode, timeLeft: nextTimeBasedTimeLeft } = determineTimeModeFromCurrentTime(new Date());
-              console.log("タイマー終了後の次のモード (時刻ベース):", {
-                mode: nextTimeBasedMode,
-                timeLeft: nextTimeBasedTimeLeft
-              });
-              
-              setMode(nextTimeBasedMode);
-              setTimeLeft(nextTimeBasedTimeLeft);
-              setIsActive(true);
-              
-              localStorage.setItem("pomodoroMode", nextTimeBasedMode);
-              localStorage.setItem("pomodoroTimeLeft", nextTimeBasedTimeLeft.toString());
-              localStorage.setItem("pomodoroActive", "true");
-              
-              // 最後の更新時間を記録
-              setLastTimeBasedUpdate(Date.now());
-              
-              // タイトル更新
-              document.title = `▶ ${formatTime(nextTimeBasedTimeLeft)} - ${MODES[nextTimeBasedMode].name}`;
-            }
-            
-            return newTime;
-          });
-        }
-      }, 100);
-    }
-    
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    };
-  }, [isActive, timeLeft, mode, mounted, lastTimeBasedUpdate]);
-
-  // 通知音再生
-  const playNotificationSound = () => {
-    try {
-      const audio = new Audio("/sounds/notification.mp3");
-      audio.play().catch(err => {
-        console.warn("通知音の再生に失敗しました:", err);
-      });
-    } catch (error) {
-      console.error("通知音の再生中にエラーが発生しました:", error);
-    }
-  };
-
-  // タイマー開始/一時停止
-  const toggleTimer = () => {
-    // 一時停止/再開の切り替え
-    console.log("タイマー状態を切り替えます: 現在=", isActive ? "実行中" : "停止中");
-    
-    // 現在の動作状態を反転
-    const newActiveState = !isActive;
-    
-    // 一時停止→再開時は現在時刻からモードを再計算
-    if (!isActive && newActiveState) {
-      const now = new Date();
-      const { mode: timeBasedMode, timeLeft: timeBasedTimeLeft } = determineTimeModeFromCurrentTime(now);
-      
-      console.log("タイマー再開時に時刻ベースで再計算:", {
-        mode: timeBasedMode,
-        timeLeft: timeBasedTimeLeft,
-        現在時刻: now.toLocaleTimeString()
-      });
-      
-      setMode(timeBasedMode);
-      setTimeLeft(timeBasedTimeLeft);
-      
-      // ローカルストレージとタイトルを更新
-      localStorage.setItem("pomodoroMode", timeBasedMode);
-      localStorage.setItem("pomodoroTimeLeft", timeBasedTimeLeft.toString());
-      localStorage.setItem("pomodoroActive", "true");
-      
-      document.title = `▶ ${formatTime(timeBasedTimeLeft)} - ${MODES[timeBasedMode].name}`;
-      
-      // 最後の更新時間を記録
-      setLastTimeBasedUpdate(Date.now());
-    } else {
-      setIsActive(newActiveState);
-      
-      // ローカルストレージとタイトルを更新
-      localStorage.setItem("pomodoroActive", newActiveState.toString());
-      localStorage.setItem("pomodoroTimeLeft", timeLeft.toString());
-      localStorage.setItem("pomodoroMode", mode);
-      
-      if (newActiveState) {
-        document.title = `▶ ${formatTime(timeLeft)} - ${MODES[mode].name}`;
-      } else {
-        document.title = `CONNECT - ${formatTime(timeLeft)}`;
-      }
-    }
-  };
-
-  // タイマーリセット
-  const resetTimer = () => {
-    // 現在時刻からモードと残り時間を再計算
-    const now = new Date();
-    const { mode: timeBasedMode, timeLeft: timeBasedTimeLeft } = determineTimeModeFromCurrentTime(now);
-    
-    console.log("タイマーリセット - 時刻ベースで再計算:", {
-      mode: timeBasedMode,
-      timeLeft: timeBasedTimeLeft,
-      現在時刻: now.toLocaleTimeString()
-    });
-    
-    // タイマーをリセット
-    setMode(timeBasedMode);
-    setTimeLeft(timeBasedTimeLeft);
-    setIsActive(true);
-    
-    // ローカルストレージとタイトルを更新
-    localStorage.setItem("pomodoroMode", timeBasedMode);
-    localStorage.setItem("pomodoroTimeLeft", timeBasedTimeLeft.toString());
-    localStorage.setItem("pomodoroActive", "true");
-    
-    document.title = `▶ ${formatTime(timeBasedTimeLeft)} - ${MODES[timeBasedMode].name}`;
-    
-    // 最後の更新時間を記録
-    setLastTimeBasedUpdate(Date.now());
-  };
-
-  // 完全リセット（すべての状態を初期化）
-  const clearStorage = () => {
-    console.log("ポモドーロタイマーの状態を完全リセットします");
-    
-    // 現在時刻からモードと残り時間を再計算
-    const now = new Date();
-    const { mode: timeBasedMode, timeLeft: timeBasedTimeLeft } = determineTimeModeFromCurrentTime(now);
-    
-    // ローカルストレージをクリア
-    localStorage.removeItem("pomodoroMode");
-    localStorage.removeItem("pomodoroTimeLeft");
-    localStorage.removeItem("pomodoroActive");
-    localStorage.removeItem("pomodoroSessions");
-    
-    // 時刻ベースの値で初期化
-    setMode(timeBasedMode);
-    setTimeLeft(timeBasedTimeLeft);
-    setWorkSessionsCompleted(0);
-    setIsActive(true);
-    
-    // 新しい値をローカルストレージに設定
-    localStorage.setItem("pomodoroMode", timeBasedMode);
-    localStorage.setItem("pomodoroTimeLeft", timeBasedTimeLeft.toString());
-    localStorage.setItem("pomodoroActive", "true");
-    localStorage.setItem("pomodoroSessions", "0");
-    
-    // タイトルを更新
-    document.title = `▶ ${formatTime(timeBasedTimeLeft)} - ${MODES[timeBasedMode].name}`;
-    
-    // 最後の更新時間を記録
-    setLastTimeBasedUpdate(Date.now());
-  };
-
-  // モード切り替え
-  const changeMode = (newMode: TimerMode) => {
-    console.log(`モードを手動で切り替えます: ${mode} → ${newMode}`);
-    
-    // 現在時刻からモードと残り時間を再計算
-    const now = new Date();
-    const { mode: timeBasedMode, timeLeft: timeBasedTimeLeft } = determineTimeModeFromCurrentTime(now);
-    
-    // 手動で設定したいモードがある場合はそれを優先
-    if (newMode) {
-      console.log("手動モード切替 - ユーザー指定の動作:", {
-        指定モード: newMode,
-        時刻ベースのモード提案: timeBasedMode,
-        現在時刻: now.toLocaleTimeString()
-      });
-      
-      setMode(newMode);
-      setTimeLeft(MODES[newMode].duration);
-      setIsActive(false); // 手動切替時は一旦停止
-      
-      // ローカルストレージを更新
-      localStorage.setItem("pomodoroTimeLeft", MODES[newMode].duration.toString());
-      localStorage.setItem("pomodoroMode", newMode);
-      localStorage.setItem("pomodoroActive", "false");
-      
-      // タイトル更新
-      document.title = `CONNECT - ${formatTime(MODES[newMode].duration)}`;
-    } else {
-      // 現在時刻ベースのモードを使用
-      setMode(timeBasedMode);
-      setTimeLeft(timeBasedTimeLeft);
-      setIsActive(true);
-      
-      // ローカルストレージを更新
-      localStorage.setItem("pomodoroTimeLeft", timeBasedTimeLeft.toString());
-      localStorage.setItem("pomodoroMode", timeBasedMode);
-      localStorage.setItem("pomodoroActive", "true");
-      
-      // タイトル更新
-      document.title = `▶ ${formatTime(timeBasedTimeLeft)} - ${MODES[timeBasedMode].name}`;
-      
-      // 最後の更新時間を記録
-      setLastTimeBasedUpdate(Date.now());
-    }
-  };
-
-  // 残り時間のフォーマット
-  const formatTime = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // 進捗率の計算
-  const calculateProgress = (): number => {
-    // モードごとのデフォルト時間に対する進捗率を計算
-    // ただし、時刻ベースの場合は次の区切りまでの時間ベースの計算にする
-    const maxTime = mode === "WORK" ? 25 * 60 : 5 * 60; // 近似値で計算
-    // 0-100の範囲に収める
-    return Math.min(100, Math.max(0, 100 - (timeLeft / maxTime) * 100));
-  };
-
-  // 次のモードの名前を取得
-  const getNextModeName = (): string => {
-    return MODES[mode].nextName;
-  };
-
-  if (!mounted) {
-    return (
-      <div className="flex items-center justify-center h-[200px]">
-        <div className="animate-pulse text-gray-400">タイマーを読み込み中...</div>
-      </div>
-    );
-  }
+  const {
+    mode,
+    formattedTimeLeft,
+    isActive,
+    progress,
+    workSessionsCompleted,
+    currentMode,
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    switchMode
+  } = usePomodoro();
 
   return (
-    <Card className="shadow-lg bg-white/10 backdrop-blur-sm border-0">
+    <Card className="w-full max-w-sm mx-auto">
       <CardContent className="pt-6">
-        <div className="flex flex-col space-y-4">
-          {/* タイマー情報 */}
-          <div className="flex flex-col items-center space-y-1">
-            <h2 className="text-xl font-semibold flex items-center gap-2">
-              <Badge 
-                className={`${MODES[mode].color} text-white px-3 py-1`} 
-                variant="default"
-              >
-                {MODES[mode].name}
-              </Badge>
-              {workSessionsCompleted > 0 && (
-                <Badge 
-                  className="bg-gray-600 text-white px-2 py-0.5 text-xs" 
-                  variant="default"
-                >
-                  セッション: {workSessionsCompleted}
-                </Badge>
-              )}
-            </h2>
-            
-            {/* カウントダウン表示 */}
-            <div className="text-5xl font-bold font-mono tracking-wider">
-              {formatTime(timeLeft)}
-            </div>
-            
-            {/* プログレスバー */}
-            <div className="w-full mt-2">
-              <Progress 
-                value={calculateProgress()} 
-                className={`h-2 ${MODES[mode].color}`} 
-              />
-            </div>
+        <div className="flex justify-between items-center mb-4">
+          <div className="flex items-center gap-2">
+            <TimerIcon className="h-5 w-5 text-amber-500" />
+            <h3 className="text-lg font-medium">ポモドーロタイマー</h3>
           </div>
           
-          {/* コントロールボタン */}
-          <div className="flex justify-center space-x-2 pt-2">
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="border-[#404550] text-white hover:text-white hover:bg-[#404550]"
-                    onClick={toggleTimer}
-                  >
-                    {isActive ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent className="bg-[#404550] text-white">
-                  <p>{isActive ? "一時停止" : "開始"}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="border-[#404550] text-white hover:text-white hover:bg-[#404550]"
-                    onClick={resetTimer}
-                  >
-                    <RefreshCw className="h-5 w-5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent className="bg-[#404550] text-white">
-                  <p>リセット</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            
-            {mode === "WORK" ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="border-[#404550] text-white hover:text-white hover:bg-[#404550]"
-                      onClick={() => changeMode("BREAK")}
-                    >
-                      <Coffee className="h-5 w-5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent className="bg-[#404550] text-white">
-                    <p>休憩モードに切り替え</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            ) : (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="border-[#404550] text-white hover:text-white hover:bg-[#404550]"
-                      onClick={() => changeMode("WORK")}
-                    >
-                      <Brain className="h-5 w-5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent className="bg-[#404550] text-white">
-                    <p>作業モードに切り替え</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
+          <Badge 
+            variant="outline" 
+            className={`${currentMode.color} text-white`}
+          >
+            {currentMode.name}
+          </Badge>
+        </div>
+        
+        <div className="text-center my-8">
+          <div className="text-4xl font-bold tracking-tighter">
+            {formattedTimeLeft}
           </div>
+        </div>
+        
+        <Progress 
+          value={progress} 
+          className={`h-2 ${currentMode.color}`} 
+        />
+        
+        <div className="flex justify-between mt-2 text-xs text-muted-foreground">
+          <span>0:00</span>
+          <span>
+            {mode === 'WORK' ? '25:00' : mode === 'BREAK' ? '5:00' : '15:00'}
+          </span>
+        </div>
+
+        <div className="flex justify-center gap-2 mt-6">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => switchMode('WORK')}
+                  className={`rounded-full ${mode === 'WORK' ? 'border-amber-500 border-2' : ''}`}
+                >
+                  <Brain className="h-4 w-4 text-amber-500" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>作業モード (25分)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => switchMode('BREAK')}
+                  className={`rounded-full ${mode === 'BREAK' ? 'border-green-500 border-2' : ''}`}
+                >
+                  <Coffee className="h-4 w-4 text-green-500" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>休憩モード (5分)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </CardContent>
       
-      {/* フッター部分 */}
-      <CardFooter className="justify-between pt-2 pb-4 px-6 text-xs text-gray-300">
-        <div className="flex items-center gap-1">
-          <TimerIcon className="h-3.5 w-3.5 opacity-70" />
-          <span>次: {getNextModeName()}</span>
+      <CardFooter className="flex justify-between pt-0">
+        <div className="text-sm text-muted-foreground">
+          作業完了: <span className="font-medium">{workSessionsCompleted}回</span>
+        </div>
+        
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={resetTimer}
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          
+          {isActive ? (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={pauseTimer}
+            >
+              <Pause className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              variant="default"
+              size="icon"
+              onClick={startTimer}
+            >
+              <Play className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </CardFooter>
     </Card>
@@ -6627,8 +8454,9 @@ export default function Seat({ seat }: SeatProps) {
 
 <file path="components/UserCard.tsx">
 import Image from "next/image";
-import { calculateElapsedTime, getElapsedTimeStyle } from "@/lib/utils";
+import { calculateElapsedTime, getElapsedTimeStyle } from "@/lib/client-utils";
 import { useState, useEffect } from "react";
+import AutoExitStatus from "./AutoExitStatus";
 
 interface UserCardProps {
   user: {
@@ -6636,12 +8464,14 @@ interface UserCardProps {
     name: string;
     avatar?: string;
     task?: string | null;
-    autoExitTime?: Date | string | null;
+    autoExitScheduled?: Date | string | null;
     enterTime?: Date | string | null;
-  }
+  };
+  roomId?: string;
+  position?: number;
 }
 
-export default function UserCard({ user }: UserCardProps) {
+export default function UserCard({ user, roomId, position }: UserCardProps) {
   // Hydration Errorを防ぐためにクライアントサイドでのみ計算する
   const [mounted, setMounted] = useState(false);
   const [displayTime, setDisplayTime] = useState<string>("0分");
@@ -6678,7 +8508,25 @@ export default function UserCard({ user }: UserCardProps) {
           経過: {displayTime}
         </span>
       </div>
-      <p className="text-xs text-gray-600 truncate">{user.task || '作業中'}</p>
+      
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-600 truncate">{user.task || '作業中'}</p>
+        
+        {/* 自動退室時間が設定されている場合、コンパクトモードで表示 */}
+        {user.autoExitScheduled && (
+          <AutoExitStatus 
+            scheduledTime={typeof user.autoExitScheduled === 'string' 
+              ? user.autoExitScheduled 
+              : user.autoExitScheduled instanceof Date 
+                ? user.autoExitScheduled.toISOString() 
+                : null}
+            seatId={user.id}
+            roomId={roomId}
+            position={position}
+            isCompact={true}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -7610,6 +9458,107 @@ APIキーの管理: .env.localで管理し、クライアントに露出しな�
 Netlifyでのホスティングを前提に、サーバーレス環境に配慮。
 </file>
 
+<file path="docs/refactoring-strategy.md">
+オンラインコワーキングスペース リファクタリング戦略
+1. 現状評価と目標設定
+現状評価:
+
+技術スタック: Next.js (App Router), TypeScript, MongoDB, Tailwind CSS, Shadcn UI, Server-Sent Events (SSE), YouTube Data API。モダンで適切な技術選定。
+コード構成: app, components, lib, scripts, docs に分離されており、基本的な構造は良好。
+機能: YouTubeコメント連携、コマンド処理、座席管理、リアルタイム更新 (SSE)、自動退室、ポモドーロタイマー表示、UIコンポーネント群。
+潜在的な課題:
+リアルタイム処理の複雑性: SSEハンドラ(api/sse/route.ts)がDB変更監視と定期的な自動退室チェックの両方を担っており、複雑化・不安定化のリスクがある。
+コマンド処理の責務: api/youtube-comments/route.ts がコメント取得(GET)とDB更新(コマンド処理による副作用)の両方を行っており、REST原則から逸脱している。また、クライアント(page.tsx)からのポーリング呼び出しに依存している。
+状態管理: Seat/Roomの状態は主にSSE経由で更新されるが、接続断時の復旧ロジックやクライアント側での一貫性担保が課題となる可能性がある。
+ロジックの重複: ポモドーロタイマー関連ロジックが Header.tsx (時刻ベース) と PomodoroTimer.tsx (本来のタイマー) の両方に存在する可能性がある (現状 PomodoroTimer.tsx が主要に見えるが、Header.tsx の時刻ベース計算は複雑で不安定要素)。localStorage への依存も懸念。
+自動退室ロジックの重複: api/check-auto-exit/route.ts と api/sse/route.ts 内のチェックロジックが重複している。
+テスト: 自動テスト（ユニット、インテグレーション）が存在しない。
+エラーハンドリング: 各所に try-catch はあるが、より一貫性のあるエラー報告・監視体制が必要。
+型定義: lib/mongodb.ts に主要な型があるが、APIレスポンスやコンポーネントPropsなど、より網羅的な型付けが望ましい。
+ドキュメント: docs フォルダは存在するが、コード変更に伴う継続的な更新が必要。
+JavaScriptファイル: lib/youtube.js, scripts/test-mongodb-cjs.js など、TypeScriptプロジェクト内にJavaScriptファイルが混在している (lib/youtube.ts もあるため重複)。
+リファクタリング目標:
+
+保守性の向上: コードの可読性、理解しやすさ、変更の容易さを向上させる。
+信頼性の向上: バグを減らし、エラーハンドリングを強化し、システムの安定性を高める。特にリアルタイム処理と状態管理。
+パフォーマンスの最適化: APIレスポンス、データベースアクセス、フロントエンドレンダリングの効率を改善する。
+テスト容易性の向上: ユニットテスト、インテグレーションテストを導入しやすくする。
+関心の分離: 各コンポーネントやモジュールの責務を明確にする。
+2. リファクタリング戦略（フェーズ分け）
+フェーズ 0: 準備と基盤整備
+
+テスト環境構築:
+Jest / React Testing Library / Playwright 等のテストフレームワークを導入。
+基本的なテストカバレッジレポート設定。
+リンティング・フォーマット:
+ESLint / Prettier のルールを確認・統一し、CIでのチェックを強制。
+TypeScript移行:
+lib/youtube.js -> lib/youtube.ts へ完全移行・統合。不要な .js ファイルを削除。
+scripts 内の .js ファイルも可能な限り .ts へ移行 (ts-node 活用)。
+依存関係整理:
+package.json を確認し、不要な依存関係を削除。バージョンを最新安定版に更新検討。
+フェーズ 1: コアロジックの整理と責務分離
+
+ポモドーロタイマーロジック統合:
+Header.tsx と PomodoroTimer.tsx のタイマーロジックを分析。
+推奨: PomodoroTimer.tsx のロジックを主とし、現在時刻ベースの複雑な計算（特に determineTimeModeFromCurrentTime）は削除または大幅に簡略化する。状態管理（Context API や Zustand など）を導入し、Header と PomodoroTimer で状態を共有する。localStorage への直接依存を減らし、状態管理ライブラリ経由にする。
+自動退室ロジック統合:
+api/sse/route.ts 内の定期チェックを主とし、api/check-auto-exit/route.ts は削除または補助的な役割（手動トリガー等）に限定する。SSEハンドラ内のチェックロジックの安定性を高める。
+YouTubeコメント処理とコマンド実行の分離:
+api/youtube-comments/route.ts は コメント取得 に専念させる。GETリクエストでDB更新を行うのをやめる。
+推奨:
+バックエンドで独立したポーリングプロセス（例: 定期実行される別のAPIルートや、サーバーレス環境なら外部スケジューラからのWebhookトリガー）を実装し、コメントを取得。
+取得したコメントをキュー（例: Vercel KV や MongoDB の一時コレクション）に入れる。
+別のAPIルート (api/process-command/route.ts など）がキューからコマンドを処理し、DB更新とYouTubeへの応答メッセージ送信を行う。
+これにより、コメント取得とコマンド実行の責務が分離され、GETリクエストの副作用がなくなる。
+代替案（シンプル）: page.tsx の setInterval を維持し、api/youtube-comments でコメント取得。コマンド検出 後、クライアントから別の POST /api/commands エンドポイントを叩いて処理を依頼する。
+フェーズ 2: リアルタイム処理の改善
+
+SSEハンドラ (api/sse/route.ts) のリファクタリング:
+MongoDB Change Stream のエラーハンドリング強化（再接続ロジックなど）。
+自動退室チェックロジックをより分離・明確化。
+クライアント切断時のリソースリーク防止 (isControllerClosed 周辺のロジックを再確認・簡素化）。
+初期データ送信と変更ストリーム監視のコードを整理。
+クライアント側SSEハンドリング (page.tsx) の改善:
+EventSource のエラーハンドリング、再接続ロジックを堅牢にする。
+SSEからのデータ受信・状態更新ロジックをカスタムフック (useSeatData など) に抽出し、page.tsx をクリーンにする。
+フェーズ 3: フロントエンドと状態管理の改善
+
+page.tsx の責務軽減:
+SSE接続管理、YouTubeコメントポーリング（フェーズ1でバックエンド化しない場合）などのロジックをカスタムフックやContext Providerに移動。
+コンポーネント粒度の見直し:
+FocusRoom.tsx のアニメーションロジックが複雑な場合、状態管理ライブラリや専用のアニメーションライブラリの利用を検討。
+UIコンポーネント (components/ui) はShadcnベースで問題ないが、ドメイン固有のロジックを持つコンポーネント (UserCard, FocusRoom) は適切か確認。
+状態管理戦略の明確化:
+現在の座席/ルームデータはSSEプッシュ型。クライアント側での状態保持、表示更新ロジックを明確にする。必要であれば Zustand や Jotai などの軽量ライブラリ導入を検討し、グローバル/共有状態を一元管理する。use-toast のようなフックも状態管理の一部と見なせる。
+フェーズ 4: テストカバレッジ向上
+
+ユニットテスト:
+lib/utils.ts 内のヘルパー関数 (detectCommand, calculateRemainingTime 等）。
+lib/messages.ts のテンプレート生成。
+コンポーネントの表示ロジック（UserCard, PomodoroTimer など）。
+インテグレーションテスト:
+APIエンドポイントのテスト（Mock Service Worker や Supertest を使用）。コマンド処理、SSE接続、DB操作を含むシナリオ。
+フロントエンドとバックエンドを連携させたテスト（例: コマンド送信 -> UI更新）。
+E2Eテスト (オプション):
+主要なユーザーフロー（入室、退室、自動退室の確認）を Playwright などで自動化。
+フェーズ 5: ドキュメントとクリーンアップ
+
+ドキュメント更新:
+docs/ 内のドキュメントをリファクタリング内容に合わせて更新。
+コード内のコメント（JSDoc/TSDoc）を充実させる。特にAPIや複雑なロジック。
+コードクリーンアップ:
+未使用の変数、関数、インポート、コンポーネントを削除。
+console.log 等のデバッグコードを削除または適切なロガーに置き換え。
+.env.example を作成し、必要な環境変数を明記。
+3. 実施上の注意点
+段階的実施: 各フェーズごとに変更をマージし、動作確認を行う。一度に大きな変更を加えない。
+テスト駆動: 新しいコードやリファクタリングされたコードには必ずテストを追加する。既存機能が壊れていないことを確認するリグレッションテストが重要。
+コードレビュー: すべての変更に対してチーム内でコードレビューを実施する。
+計測: パフォーマンス改善を目指す場合は、リファクタリング前後のベンチマークを取得する。
+後方互換性: APIの変更など、外部（もしあれば）やフロントエンドに影響がある場合は、互換性に注意するか、バージョン管理を行う。
+</file>
+
 <file path="docs/ui-implementation.md">
 # UI実装要件
 
@@ -8258,156 +10207,472 @@ export function getElapsedTimeStyle(enterTime: Date | string | null): string {
 }
 </file>
 
-<file path="lib/youtube.js">
-// YouTube API用のヘルパー関数（JavaScript版）
-
-const { google } = require('googleapis');
-
-if (!process.env.YOUTUBE_API_KEY) {
-  throw new Error('Missing YOUTUBE_API_KEY environment variable');
-}
-
-const youtube = google.youtube({
-  version: 'v3',
-  auth: process.env.YOUTUBE_API_KEY,
-});
-
-async function sendChatMessage(liveChatId, message) {
-  try {
-    const response = await youtube.liveChatMessages.insert({
-      part: ['snippet'],
-      requestBody: {
-        snippet: {
-          liveChatId,
-          type: 'textMessageEvent',
-          textMessageDetails: {
-            messageText: message,
-          },
-        },
-      },
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error sending chat message:', error);
-    throw error;
-  }
-}
-
-async function getLiveChatId(videoId) {
-  try {
-    const response = await youtube.videos.list({
-      part: ['liveStreamingDetails'],
-      id: [videoId],
-    });
-    return response.data.items?.[0]?.liveStreamingDetails?.activeLiveChatId;
-  } catch (error) {
-    console.error('Error getting live chat ID:', error);
-    throw error;
-  }
-}
-
-async function getLiveChatMessages(liveChatId, pageToken) {
-  try {
-    const response = await youtube.liveChatMessages.list({
-      part: ['snippet', 'authorDetails'],
-      liveChatId,
-      pageToken,
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error getting live chat messages:', error);
-    throw error;
-  }
-}
-
-module.exports = {
-  sendChatMessage,
-  getLiveChatId,
-  getLiveChatMessages
-};
-</file>
-
 <file path="lib/youtube.ts">
-import { google } from 'googleapis';
+import { google, youtube_v3 } from 'googleapis';
+import { Db } from 'mongodb';
+import { messageTemplates } from './messages';
+import { scheduleAutoExit } from './autoExit';
 
 if (!process.env.YOUTUBE_API_KEY) {
   throw new Error('Missing YOUTUBE_API_KEY environment variable');
 }
 
 // YouTube API の型定義
-interface Author {
+export interface Author {
   displayName: string;
   profileImageUrl: string;
   channelId: string;
 }
 
-interface MessageSnippet {
+export interface MessageSnippet {
   displayMessage: string;
   publishedAt: string;
 }
 
-interface ChatItem {
+export interface ChatItem {
   id: string;
   snippet: MessageSnippet;
   authorDetails: Author;
 }
 
-interface ChatResponse {
+export interface ChatResponse {
   items: ChatItem[];
   nextPageToken: string;
   pollingIntervalMillis: number;
 }
 
-const youtube = google.youtube({
+// API リクエストエラーの型
+export class YouTubeAPIError extends Error {
+  status?: number;
+  code?: string;
+  
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = 'YouTubeAPIError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+// API Keyを使ったYouTube APIの初期化
+const youtubeWithApiKey = google.youtube({
   version: 'v3',
-  auth: process.env.YOUTUBE_API_KEY,
+  auth: process.env.YOUTUBE_API_KEY
 });
 
+// OAuth2クライアントの設定（OAuth認証が設定されている場合のみ使用）
+let oauth2Client: any;
+let youtubeWithOAuth: youtube_v3.Youtube | null = null;
+
+if (process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET && process.env.YOUTUBE_REDIRECT_URL) {
+  oauth2Client = new google.auth.OAuth2(
+    process.env.YOUTUBE_CLIENT_ID,
+    process.env.YOUTUBE_CLIENT_SECRET,
+    process.env.YOUTUBE_REDIRECT_URL
+  );
+
+  // リフレッシュトークンの設定（存在する場合）
+  if (process.env.YOUTUBE_REFRESH_TOKEN) {
+    oauth2Client.setCredentials({
+      refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
+    });
+  }
+
+  // OAuth2認証を使用したYouTube APIの初期化
+  youtubeWithOAuth = google.youtube({
+    version: 'v3',
+    auth: oauth2Client
+  });
+}
+
+/**
+ * ライブチャットIDを取得する（API Keyのみで実行可能）
+ * @param videoId 動画ID
+ * @returns ライブチャットID
+ */
+export async function getLiveChatId(videoId: string): Promise<string> {
+  try {
+    const response = await youtubeWithApiKey.videos.list({
+      part: ['liveStreamingDetails'],
+      id: [videoId]
+    });
+
+    const video = response.data.items && response.data.items[0];
+    if (!video || !video.liveStreamingDetails || !video.liveStreamingDetails.activeLiveChatId) {
+      throw new Error('ライブチャットIDが見つかりませんでした');
+    }
+
+    return video.liveStreamingDetails.activeLiveChatId;
+  } catch (error) {
+    console.error('ライブチャットID取得エラー:', error);
+    throw new Error('ライブチャットIDの取得に失敗しました');
+  }
+}
+
+/**
+ * YouTubeのライブチャットにメッセージを送信する（OAuth2認証が必要）
+ * @param liveChatId ライブチャットID
+ * @param message 送信するメッセージ
+ * @returns 送信結果
+ */
 export async function sendChatMessage(liveChatId: string, message: string) {
   try {
-    const response = await youtube.liveChatMessages.insert({
+    // OAuth2認証が設定されていない場合はログのみ出力
+    if (!youtubeWithOAuth) {
+      console.log('OAuth2認証が設定されていないため、メッセージ送信をスキップします:', message);
+      return { success: false, message: 'OAuth2認証が設定されていません' };
+    }
+
+    const response = await youtubeWithOAuth.liveChatMessages.insert({
       part: ['snippet'],
       requestBody: {
         snippet: {
-          liveChatId,
+          liveChatId: liveChatId,
           type: 'textMessageEvent',
           textMessageDetails: {
-            messageText: message,
-          },
-        },
-      },
+            messageText: message
+          }
+        }
+      }
     });
+
+    console.log('メッセージ送信成功:', message);
     return response.data;
   } catch (error) {
-    console.error('Error sending chat message:', error);
-    throw error;
+    console.error('メッセージ送信エラー:', error);
+    throw new Error('メッセージの送信に失敗しました');
   }
 }
 
-export async function getLiveChatId(videoId: string): Promise<string | null> {
-  try {
-    const response = await youtube.videos.list({
-      part: ['liveStreamingDetails'],
-      id: [videoId],
-    });
-    return response.data.items?.[0]?.liveStreamingDetails?.activeLiveChatId || null;
-  } catch (error) {
-    console.error('Error getting live chat ID:', error);
-    throw error;
-  }
-}
-
+/**
+ * ライブチャットのメッセージを取得する（API Keyのみで実行可能）
+ * @param liveChatId ライブチャットID
+ * @param pageToken ページトークン（続きを取得する場合）
+ * @returns チャットメッセージのレスポンス
+ */
 export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
   try {
-    const response = await youtube.liveChatMessages.list({
+    const response = await youtubeWithApiKey.liveChatMessages.list({
       part: ['snippet', 'authorDetails'],
       liveChatId,
       pageToken: pageToken || undefined,
     });
     return response.data as ChatResponse;
+  } catch (error: any) {
+    console.error('Error getting live chat messages:', error?.response?.data || error);
+    throw new YouTubeAPIError(
+      `Failed to get live chat messages: ${error?.message || 'Unknown error'}`,
+      error?.response?.status,
+      error?.code
+    );
+  }
+}
+
+/**
+ * キャッシュされたライブチャットIDを保持するオブジェクト
+ * メモリ内キャッシュとして機能（サーバー再起動でリセット）
+ */
+export const liveChatIdCache: Record<string, string> = {};
+
+/**
+ * YouTubeコメントを処理してコマンドとして実行する
+ * @param commentText コメントテキスト
+ * @param username ユーザー名
+ * @param authorId 著者ID (YouTubeチャンネルID)
+ * @param db MongoDBインスタンス
+ * @param videoId ビデオID
+ * @returns 処理結果
+ */
+export async function processYouTubeComment(
+  commentText: string,
+  username: string,
+  authorId: string,
+  db: Db,
+  videoId?: string
+) {
+  console.log(`[YouTube] Processing comment from ${username}: ${commentText}`);
+  // コマンドとタスク名を抽出
+  const trimmedComment = commentText.trim();
+  let command = '';
+  let taskName = '';
+
+  if (trimmedComment.startsWith('/work ')) {
+    command = 'work';
+    taskName = trimmedComment.substring(6).trim();
+  } else if (trimmedComment === '/finish') {
+    command = 'finish';
+  } else {
+    // コマンドでない場合は処理しない
+    return { success: false, message: 'コメントはコマンドではありません' };
+  }
+
+  // コマンド処理を実行
+  try {
+    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName);
+    return { success: true, result };
   } catch (error) {
-    console.error('Error getting live chat messages:', error);
-    throw error;
+    console.error(`[YouTube] Error processing comment as command:`, error);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+/**
+ * コマンドを処理する共通関数
+ * YouTube APIとWeb UIの両方から使用される
+ * 
+ * @param command コマンド文字列（work, finishなど）
+ * @param username ユーザー名
+ * @param db MongoDBインスタンス
+ * @param videoId オプションのYouTubeビデオID
+ * @param liveChatId オプションのライブチャットID
+ * @param authorId オプションのユーザーID（YouTubeチャンネルIDなど）
+ * @param taskName オプションのタスク名（workコマンド用）
+ * @returns 処理結果のオブジェクト
+ */
+export async function processCommand(
+  command: string,
+  username: string,
+  db: Db,
+  videoId?: string,
+  liveChatId?: string,
+  authorId?: string,
+  taskName?: string
+) {
+  console.log(`[Command] Processing command: ${command} from ${username}`);
+  const seatsCollection = db.collection('seats');
+  
+  // ライブチャットIDが指定されていない場合で、videoIdが指定されている場合、取得を試みる
+  if (!liveChatId && videoId) {
+    try {
+      liveChatId = await getLiveChatId(videoId);
+    } catch (error) {
+      console.warn('[Command] Failed to get liveChatId, notifications will be disabled:', error);
+      // 通知は送れなくても処理は続行
+    }
+  }
+  
+  // OAuth認証が設定されているかをチェック
+  const isOAuthConfigured = !!youtubeWithOAuth;
+  
+  // コマンドタイプに応じた処理
+  if (command === 'work') {
+    if (!taskName) {
+      throw new Error('タスク名が指定されていません');
+    }
+    
+    console.log(`[Command] /work command execution: ${username} - Task: ${taskName}`);
+    
+    // ユーザーIDが指定されている場合、それを使用してユーザーを識別
+    // 指定されていない場合は、ユーザー名で識別
+    const userQuery = authorId ? { authorId } : { username };
+    
+    // ユーザーが既に入室済みか確認
+    const existingSeat = await seatsCollection.findOne(userQuery);
+    
+    const enterTime = new Date();
+    
+    if (existingSeat) {
+      // 既に入室済みの場合：タスクと時間を更新
+      await seatsCollection.updateOne(
+        { _id: existingSeat._id },
+        { 
+          $set: { 
+            task: taskName, 
+            enterTime: enterTime, 
+            username: username, // 名前が変わっている可能性も考慮
+            authorId: authorId, // IDも更新（指定されている場合）
+            timestamp: new Date()
+          } 
+        }
+      );
+      
+      // 自動退室時間を設定
+      await scheduleAutoExit(db, existingSeat.room_id, existingSeat.position, 2);
+      
+      console.log(`[Command] Updated task for ${username} to: ${taskName}`);
+      
+      // タスク更新メッセージを送信（OAuth認証が設定されている場合のみ）
+      if (liveChatId && isOAuthConfigured) {
+        try {
+          await sendChatMessage(liveChatId, messageTemplates.taskUpdated(username, taskName));
+        } catch (error) {
+          console.warn('[Command] Failed to send message, continuing without notification:', error);
+          // メッセージ送信に失敗しても処理は続行
+        }
+      }
+      
+      return {
+        success: true,
+        action: 'update',
+        seat: {
+          roomId: existingSeat.room_id,
+          position: existingSeat.position,
+          username: username,
+          task: taskName
+        }
+      };
+    } else {
+      // 新規入室の場合：空いている座席を探す
+      const availableSeat = await seatsCollection.findOneAndUpdate(
+        { username: null }, // 空席を探す
+        { 
+          $set: {
+            username: username,
+            authorId: authorId, // IDが指定されている場合は保存
+            task: taskName,
+            enterTime: enterTime,
+            timestamp: new Date()
+          }
+        },
+        { sort: { position: 1 }, returnDocument: 'after' } // position昇順で最初の空席を取得
+      );
+      
+      if (availableSeat.value) {
+        // 自動退室時間を設定
+        await scheduleAutoExit(db, availableSeat.value.room_id, availableSeat.value.position, 2);
+        
+        console.log(`[Command] ${username} entered seat ${availableSeat.value.position} (Task: ${taskName})`);
+        
+        // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
+        if (liveChatId && isOAuthConfigured) {
+          try {
+            await sendChatMessage(
+              liveChatId, 
+              messageTemplates.seatTaken(username, availableSeat.value.room_id, availableSeat.value.position, taskName)
+            );
+          } catch (error) {
+            console.warn('[Command] Failed to send message, continuing without notification:', error);
+            // メッセージ送信に失敗しても処理は続行
+          }
+        }
+        
+        return {
+          success: true,
+          action: 'enter',
+          seat: {
+            roomId: availableSeat.value.room_id,
+            position: availableSeat.value.position,
+            username: username,
+            task: taskName
+          }
+        };
+      } else {
+        // 空席がない場合は新しい座席を作成する
+        // 最大の座席番号と部屋番号を取得
+        const lastSeat = await seatsCollection.find().sort({ position: -1 }).limit(1).toArray();
+        const lastRoomSeat = await seatsCollection.find().sort({ room_id: -1 }).limit(1).toArray();
+        
+        const newPosition = lastSeat.length > 0 ? lastSeat[0].position + 1 : 1;
+        const newRoomId = lastRoomSeat.length > 0 ? lastRoomSeat[0].room_id : 1;
+        
+        // 新しい座席を作成
+        const newSeat = {
+          position: newPosition,
+          room_id: newRoomId,
+          username: username,
+          authorId: authorId,
+          task: taskName,
+          enterTime: enterTime,
+          timestamp: new Date()
+        };
+        
+        const insertResult = await seatsCollection.insertOne(newSeat);
+        
+        // 自動退室時間を設定
+        await scheduleAutoExit(db, newRoomId, newPosition, 2);
+        
+        console.log(`[Command] Created new seat: Room ${newRoomId}, Position ${newPosition} for ${username} (Task: ${taskName})`);
+        
+        // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
+        if (liveChatId && isOAuthConfigured) {
+          try {
+            await sendChatMessage(
+              liveChatId, 
+              messageTemplates.seatTaken(username, newRoomId, newPosition, taskName)
+            );
+          } catch (error) {
+            console.warn('[Command] Failed to send message, continuing without notification:', error);
+            // メッセージ送信に失敗しても処理は続行
+          }
+        }
+        
+        return {
+          success: true,
+          action: 'create',
+          seat: {
+            roomId: newRoomId,
+            position: newPosition,
+            username: username,
+            task: taskName,
+            id: insertResult.insertedId.toString()
+          }
+        };
+      }
+    }
+  } else if (command === 'finish') {
+    console.log(`[Command] /finish command execution: ${username}`);
+    
+    // ユーザーIDかユーザー名で座席を検索
+    const userQuery = authorId ? { authorId } : { username };
+    
+    try {
+      // ユーザーの座席を検索
+      const result = await seatsCollection.findOneAndUpdate(
+        userQuery,
+        { 
+          $set: { 
+            username: null, 
+            authorId: null, 
+            task: null, 
+            enterTime: null, 
+            autoExitScheduled: null,
+            timestamp: new Date()
+          } 
+        },
+        { returnDocument: 'before' } // 更新前の情報を取得
+      );
+      
+      if (result.value && result.value.username) {
+        console.log(`[Command] ${username} has left the seat`);
+        
+        // 退室メッセージを送信（OAuth認証が設定されている場合のみ）
+        if (liveChatId && isOAuthConfigured) {
+          try {
+            await sendChatMessage(
+              liveChatId, 
+              messageTemplates.seatVacated(username, result.value.room_id, result.value.position)
+            );
+          } catch (error) {
+            console.warn('[Command] Failed to send message, continuing without notification:', error);
+            // メッセージ送信に失敗しても処理は続行
+          }
+        }
+        
+        return {
+          success: true,
+          action: 'exit',
+          seat: {
+            roomId: result.value.room_id,
+            position: result.value.position,
+            previousUsername: username
+          }
+        };
+      } else {
+        console.log(`[Command] ${username} was not seated`);
+        // 入室していない場合は特に何もしない
+        return {
+          success: true,
+          action: 'none',
+          message: 'ユーザーは入室していませんでした'
+        };
+      }
+    } catch (error) {
+      console.error(`[Command] Error while processing exit for ${username}:`, error);
+      throw new Error('退室処理に失敗しました: ' + (error as Error).message);
+    }
+  } else {
+    console.log(`[Command] Unsupported command: ${command}`);
+    throw new Error('対応していないコマンドです');
   }
 }
 </file>
@@ -8515,115 +10780,6 @@ async function initializeDatabase() {
 }
 
 initializeDatabase();
-</file>
-
-<file path="scripts/poll-youtube-chat.js">
-// YouTubeライブチャットのコメントを定期的にポーリングするスクリプト
-
-// dotenvを使用して環境変数を読み込む
-require('dotenv').config({ path: '.env.local' });
-
-const { getLiveChatMessages, getLiveChatId } = require('../lib/youtube');
-
-// 検出したコマンドを処理する関数
-function processCommand(author, command, roomNumber) {
-  console.log(`[コマンド処理] ユーザー「${author}」を部屋「${roomNumber}」に割り当てます。`);
-  // ここで座席管理システムなどと連携する処理を追加
-  // 例: データベースの更新、通知の送信など
-}
-
-// ポーリング処理を行う関数
-async function pollYouTubeChat() {
-  try {
-    // 環境変数から動画IDを取得
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
-    
-    if (!videoId) {
-      console.error('YOUTUBE_VIDEO_IDが設定されていません。');
-      return;
-    }
-    
-    console.log('YouTubeライブチャットのポーリングを開始します...');
-    console.log(`動画ID: ${videoId}`);
-    
-    // 動画IDからライブチャットIDを取得
-    const liveChatId = await getLiveChatId(videoId);
-    
-    if (!liveChatId) {
-      console.error('ライブチャットIDが取得できませんでした。ライブ配信が終了しているか確認してください。');
-      return;
-    }
-    
-    console.log(`ライブチャットID: ${liveChatId}`);
-    
-    // ポーリングループを開始
-    await pollChatLoop(liveChatId);
-    
-  } catch (error) {
-    console.error('エラーが発生しました:', error);
-  }
-}
-
-// 継続的なポーリングを行うループ関数
-async function pollChatLoop(liveChatId, pageToken = null) {
-  try {
-    // コメントデータを取得
-    const chatData = await getLiveChatMessages(liveChatId, pageToken);
-    
-    // 次回のポーリング間隔
-    const nextPollTime = chatData.pollingIntervalMillis || 5000; // デフォルトは5秒
-    
-    // 次のページトークン
-    const nextPageToken = chatData.nextPageToken;
-    
-    // ステータス表示
-    const timestamp = new Date().toLocaleString('ja-JP');
-    console.log(`\n[${timestamp}] コメント取得成功 (${chatData.items?.length || 0}件)`);
-    
-    // 取得したコメントを処理
-    if (chatData.items && chatData.items.length > 0) {
-      chatData.items.forEach(item => {
-        const author = item.authorDetails?.displayName || '不明なユーザー';
-        const text = item.snippet?.displayMessage || '';
-        const publishTime = new Date(item.snippet?.publishedAt || '').toLocaleString('ja-JP');
-        
-        console.log(`[${publishTime}] ${author}: ${text}`);
-        
-        // コマンド検出 (例: /30)
-        const commandMatch = text.match(/\/(\d+)/);
-        if (commandMatch) {
-          const roomNumber = commandMatch[1];
-          console.log(`    → コマンド「/${roomNumber}」を検出しました！`);
-          
-          // 検出したコマンドを処理
-          processCommand(author, text, roomNumber);
-        }
-      });
-    }
-    
-    // 次回のポーリング時間を表示
-    console.log(`次回のポーリングまで ${nextPollTime}ms 待機します...`);
-    
-    // 指定された間隔後に再帰的に呼び出し
-    setTimeout(() => {
-      pollChatLoop(liveChatId, nextPageToken);
-    }, nextPollTime);
-    
-  } catch (error) {
-    console.error('ポーリング中にエラーが発生しました:', error);
-    
-    // エラー発生時は少し待ってから再試行
-    console.log('10秒後に再試行します...');
-    setTimeout(() => {
-      pollChatLoop(liveChatId, pageToken);
-    }, 10000);
-  }
-}
-
-// メイン処理を実行
-pollYouTubeChat().catch(error => {
-  console.error('予期せぬエラーが発生しました:', error);
-});
 </file>
 
 <file path="scripts/poll-youtube-chat.ts">
@@ -8758,71 +10914,11 @@ pollYouTubeChat().catch(error => {
 });
 </file>
 
-<file path="scripts/test-mongodb-cjs.js">
-// MongoDB接続テスト用スクリプト（CommonJS版）
-const { MongoClient } = require('mongodb');
-const dotenv = require('dotenv');
-const path = require('path');
-
-// .env.localを読み込み
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
-
-async function testMongoDBConnection() {
-  if (!process.env.MONGODB_URI) {
-    console.error('環境変数MONGODB_URIが設定されていません');
-    process.exit(1);
-  }
-
-  const client = new MongoClient(process.env.MONGODB_URI);
-
-  try {
-    console.log('MongoDB接続テストを開始します...');
-    
-    // データベースに接続
-    await client.connect();
-    console.log('MongoDB接続成功！');
-    
-    // データベース情報を表示
-    const db = client.db('coworking');
-    const collections = await db.listCollections().toArray();
-    
-    console.log('データベース: coworking');
-    console.log('コレクション一覧:');
-    collections.forEach((collection, index) => {
-      console.log(`${index + 1}. ${collection.name}`);
-    });
-    
-    // roomsコレクションのデータ取得
-    const rooms = await db.collection('rooms').find().toArray();
-    console.log('\nルーム数:', rooms.length);
-    console.log('ルーム一覧:', rooms.map(room => room._id));
-    
-    // seatsコレクションのデータ取得
-    const seats = await db.collection('seats').find().toArray();
-    console.log('\n座席数:', seats.length);
-    console.log('最初の座席データ例:', JSON.stringify(seats[0] || 'データなし', null, 2));
-    
-    console.log('\nMongoDBテスト完了');
-  } catch (error) {
-    console.error('MongoDB接続エラー:', error);
-  } finally {
-    await client.close();
-  }
-}
-
-testMongoDBConnection();
-</file>
-
-<file path="scripts/test-mongodb.js">
+<file path="scripts/test-mongodb.ts">
 // MongoDB接続テスト用スクリプト
 import { MongoClient } from 'mongodb';
 import * as dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// ESモジュールでのファイルパス取得
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import * as path from 'path';
 
 // .env.localを読み込み
 dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
@@ -8861,133 +10957,29 @@ async function testMongoDBConnection() {
     const seats = await db.collection('seats').find().toArray();
     console.log('\n座席数:', seats.length);
     console.log('最初の座席データ例:', JSON.stringify(seats[0] || 'データなし', null, 2));
-    
+
+    // 座席数とユーザー数を確認
+    const userSeats = await db.collection('seats').find({ username: { $ne: null } }).toArray();
+    console.log('\n現在利用中の座席数:', userSeats.length);
+    if (userSeats.length > 0) {
+      console.log('入室中のユーザー一覧:');
+      userSeats.forEach((seat, index) => {
+        const enterTime = seat.enterTime ? new Date(seat.enterTime).toLocaleString() : '不明';
+        const exitTime = seat.autoExitScheduled ? new Date(seat.autoExitScheduled).toLocaleString() : '不明';
+        console.log(`${index + 1}. ${seat.username} - 部屋: ${seat.room_id}, 座席: ${seat.position}, 入室: ${enterTime}, 自動退室: ${exitTime}`);
+      });
+    }
+
     console.log('\nMongoDBテスト完了');
   } catch (error) {
     console.error('MongoDB接続エラー:', error);
   } finally {
     await client.close();
-  }
-}
-
-testMongoDBConnection();
-</file>
-
-<file path="scripts/test-mongodb.ts">
-import clientPromise from '../lib/mongodb';
-
-async function testMongoDBConnection() {
-  try {
-    console.log('MongoDB接続テストを開始します...');
-    
-    // クライアント接続を取得
-    const client = await clientPromise;
-    console.log('MongoDB接続成功！');
-    
-    // データベース情報を表示
-    const db = client.db('coworking');
-    const collections = await db.listCollections().toArray();
-    
-    console.log('データベース: coworking');
-    console.log('コレクション一覧:');
-    collections.forEach((collection, index) => {
-      console.log(`${index + 1}. ${collection.name}`);
-    });
-    
-    // roomsコレクションのデータ取得
-    const rooms = await db.collection('rooms').find().toArray();
-    console.log('\nルーム数:', rooms.length);
-    console.log('ルーム一覧:', rooms.map(room => room._id));
-    
-    // seatsコレクションのデータ取得
-    const seats = await db.collection('seats').find().toArray();
-    console.log('\n座席数:', seats.length);
-    console.log('最初の座席データ例:', seats[0] || 'データなし');
-    
-    console.log('\nMongoDBテスト完了');
-  } catch (error) {
-    console.error('MongoDB接続エラー:', error);
-  }
-}
-
-testMongoDBConnection();
-</file>
-
-<file path="scripts/test-youtube-api.js">
-// テスト用スクリプト: YouTube APIを利用してライブチャットのコメントを取得する
-
-// dotenvを使用して環境変数を読み込む
-require('dotenv').config({ path: '.env.local' });
-
-const { getLiveChatMessages, getLiveChatId } = require('../lib/youtube');
-
-// メインの非同期関数
-async function testYouTubeApi() {
-  try {
-    console.log('YouTube API接続テストを開始します...');
-    
-    // 環境変数から動画IDを取得
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
-    
-    if (!videoId) {
-      console.log('YOUTUBE_VIDEO_IDが設定されていません。');
-      return;
-    }
-    
-    console.log(`動画ID: ${videoId}`);
-    
-    // 動画IDからライブチャットIDを取得
-    console.log('ライブチャットIDを取得しています...');
-    const liveChatId = await getLiveChatId(videoId);
-    
-    if (!liveChatId) {
-      console.log('ライブチャットIDが取得できませんでした。');
-      console.log('この動画はライブ配信ではないか、ライブ配信が終了している可能性があります。');
-      return;
-    }
-    
-    console.log(`ライブチャットID: ${liveChatId}`);
-    
-    // ライブチャットのコメントを取得
-    console.log('ライブチャットコメントを取得しています...');
-    const chatData = await getLiveChatMessages(liveChatId);
-    
-    // 取得したデータを表示
-    console.log('ライブチャット情報:');
-    console.log(`ポーリング間隔: ${chatData.pollingIntervalMillis}ms`);
-    console.log(`次のページトークン: ${chatData.nextPageToken}`);
-    console.log(`コメント数: ${chatData.items?.length || 0}`);
-    
-    // 各コメントの内容を表示
-    if (chatData.items && chatData.items.length > 0) {
-      console.log('\n=== 最新のコメント ===');
-      chatData.items.forEach((item, index) => {
-        const author = item.authorDetails?.displayName || '不明なユーザー';
-        const text = item.snippet?.displayMessage || '';
-        const timestamp = new Date(item.snippet?.publishedAt).toLocaleString('ja-JP');
-        
-        console.log(`\n#${index + 1} [${timestamp}] ${author}:`);
-        console.log(`    "${text}"`);
-        
-        // コマンド検出 (例: /30) のテスト
-        const commandMatch = text.match(/\/(\d+)/);
-        if (commandMatch) {
-          const roomNumber = commandMatch[1];
-          console.log(`    ※ コマンド検出: /「${roomNumber}」の部屋に割り当て`);
-        }
-      });
-    } else {
-      console.log('\nコメントはありません。');
-    }
-    
-    console.log('\nYouTube API接続テスト完了');
-  } catch (error) {
-    console.error('エラーが発生しました:', error);
   }
 }
 
 // スクリプト実行
-testYouTubeApi();
+testMongoDBConnection();
 </file>
 
 <file path="scripts/test-youtube-api.ts">
@@ -9070,7 +11062,22 @@ testYouTubeApi();
 
 <file path=".eslintrc.json">
 {
-  "extends": "next/core-web-vitals"
+  "extends": [
+    "next/core-web-vitals",
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended",
+    "prettier"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "plugins": ["@typescript-eslint", "react", "react-hooks"],
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react/prop-types": "off",
+    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-console": ["warn", { "allow": ["warn", "error"] }]
+  }
 }
 </file>
 
@@ -9222,7 +11229,12 @@ module.exports = nextConfig;
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "db:indexes": "npx ts-node scripts/create-indexes.ts"
+    "lint:fix": "next lint --fix",
+    "format": "prettier --write \"**/*.{js,ts,tsx,md,json}\"",
+    "db:indexes": "npx ts-node scripts/create-indexes.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
@@ -9285,9 +11297,21 @@ module.exports = nextConfig;
     "tailwindcss-animate": "^1.0.7",
     "typescript": "5.2.2",
     "vaul": "^0.9.9",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.2",
+    "@testing-library/react": "^14.2.1",
+    "@types/jest": "^29.5.12",
+    "@typescript-eslint/eslint-plugin": "^8.29.0",
+    "@typescript-eslint/parser": "^8.29.0",
+    "eslint-config-prettier": "^10.1.1",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "prettier": "^3.5.3",
     "ts-node": "^10.9.2"
   }
 }
@@ -9300,6 +11324,103 @@ module.exports = {
     autoprefixer: {},
   },
 };
+</file>
+
+<file path="refactoring-tasks.md">
+# リファクタリングタスクリスト
+
+**現在の作業フェーズ:** フェーズ1 - コアロジックの整理と責務分離
+
+## フェーズ0 - 基盤整備（完了）
+
+- [x] Jest / React Testing Libraryの統合
+- [x] 基本的なテストカバレッジレポートの設定
+- [x] ESLint / Prettierルールの統一とCIでのチェック
+- [x] `lib/youtube.js` → `lib/youtube.ts` への完全な移行
+- [x] 不要な`.js`ファイルの削除
+- [x] `scripts`内の`.js`ファイルを可能な範囲で`.ts`に移行
+- [x] `package.json`の不要な依存関係をレビュー（問題なしを確認）
+- [x] 依存関係バージョンの更新検討（大きな問題なしを確認）
+
+## フェーズ1 - コアロジックの整理と責務分離
+
+- [x] Zustandによる状態管理導入
+  - [x] Pomodoroタイマーロジックのリファクタリング
+
+- [x] YouTube関連の責務分離
+  - [x] コメント処理とコマンド実行の分離
+  - [x] APIエンドポイントの再設計
+  - [x] エラーハンドリングの強化
+
+- [x] SSE（Server-Sent Events）通信の改善
+  - [x] 複数コネクション対応の改善
+  - [x] エラーハンドリングの強化
+  - [x] 再接続ロジックの実装
+  - [x] 接続断からの回復機能の実装
+  - [x] クライアント側の再接続処理の改善
+
+- [x] 自動退室ロジックの整理
+  - [x] バックエンドのロジックをライブラリに集約
+  - [x] フロントエンドの表示ロジックを分離
+
+## フェーズ2 - プレゼンテーション層の整理
+
+- [ ] コンポーネントの責務分離
+  - [ ] 表示関連コンポーネントの分割
+  - [ ] ロジック部分とUIの分離
+  - [ ] Propsの型定義強化
+
+- [ ] シャドーCNとTailwindの最適化
+  - [ ] スタイルシステムの統一
+  - [ ] コンポーネント間の一貫性確保
+
+- [ ] アクセシビリティの改善
+  - [ ] ARIA属性の適切な利用
+  - [ ] キーボードナビゲーションの改善
+
+## フェーズ3 - パフォーマンス最適化
+
+- [ ] レンダリングパフォーマンスの最適化
+  - [ ] 不要なレンダリングの削減
+  - [ ] メモ化による最適化の検討
+
+- [ ] バンドルサイズの最適化
+  - [ ] 使用していないコードの削除
+  - [ ] 重複コードの統合
+  - [ ] コードスプリッティングの検討
+
+- [ ] API通信の最適化
+  - [ ] データフェッチングの統合
+  - [ ] キャッシュ戦略の実装
+
+## フェーズ 4: テストカバレッジ向上
+
+### ユニットテスト
+- [ ] `lib/utils.ts` 内のヘルパー関数のユニットテストを作成・拡充
+- [ ] `lib/messages.ts` のテンプレート生成関数のユニットテストを作成
+- [ ] `UserCard`, `PomodoroTimer` など主要コンポーネントの表示ロジックに関するユニットテストを作成
+
+### インテグレーションテスト
+- [ ] APIエンドポイントのテスト環境（Mock Service Worker or Supertest）をセットアップ
+- [ ] コマンド処理APIのインテグレーションテストを作成
+- [ ] SSE接続とデータフローに関するインテグレーションテストを作成
+- [ ] DB操作を含むシナリオのインテグレーションテストを作成
+- [ ] フロントエンドとバックエンドを連携させたテストシナリオ（コマンド送信 → UI更新など）を作成
+
+### E2Eテスト (オプション)
+- [ ] PlaywrightなどのE2Eテストフレームワークを導入
+- [ ] 主要ユーザーフロー（入室、退室、自動退室）のE2Eテストを作成
+
+## フェーズ 5: ドキュメントとクリーンアップ
+
+### ドキュメント更新
+- [ ] `docs/` 内のドキュメント（特に `refactoring-strategy.md` や関連文書）をリファクタリング内容に合わせて更新
+- [ ] コード内のコメント（JSDoc/TSDoc）を充実させる (特にAPI、複雑なロジック)
+
+### コードクリーンアップ
+- [ ] 未使用の変数、関数、インポート、コンポーネントを特定し削除
+- [ ] `console.log` 等のデバッグコードを削除または適切なロガーに置き換え
+- [ ] `.env.example` ファイルを作成・更新し、必要な環境変数を明記
 </file>
 
 <file path="tailwind.config.ts">

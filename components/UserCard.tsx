@@ -1,6 +1,7 @@
 import Image from "next/image";
-import { calculateElapsedTime, getElapsedTimeStyle } from "@/lib/utils";
+import { calculateElapsedTime, getElapsedTimeStyle } from "@/lib/client-utils";
 import { useState, useEffect } from "react";
+import AutoExitStatus from "./AutoExitStatus";
 
 interface UserCardProps {
   user: {
@@ -8,12 +9,14 @@ interface UserCardProps {
     name: string;
     avatar?: string;
     task?: string | null;
-    autoExitTime?: Date | string | null;
+    autoExitScheduled?: Date | string | null;
     enterTime?: Date | string | null;
-  }
+  };
+  roomId?: string;
+  position?: number;
 }
 
-export default function UserCard({ user }: UserCardProps) {
+export default function UserCard({ user, roomId, position }: UserCardProps) {
   // Hydration Errorを防ぐためにクライアントサイドでのみ計算する
   const [mounted, setMounted] = useState(false);
   const [displayTime, setDisplayTime] = useState<string>("0分");
@@ -50,7 +53,25 @@ export default function UserCard({ user }: UserCardProps) {
           経過: {displayTime}
         </span>
       </div>
-      <p className="text-xs text-gray-600 truncate">{user.task || '作業中'}</p>
+      
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-600 truncate">{user.task || '作業中'}</p>
+        
+        {/* 自動退室時間が設定されている場合、コンパクトモードで表示 */}
+        {user.autoExitScheduled && (
+          <AutoExitStatus 
+            scheduledTime={typeof user.autoExitScheduled === 'string' 
+              ? user.autoExitScheduled 
+              : user.autoExitScheduled instanceof Date 
+                ? user.autoExitScheduled.toISOString() 
+                : null}
+            seatId={user.id}
+            roomId={roomId}
+            position={position}
+            isCompact={true}
+          />
+        )}
+      </div>
     </div>
   );
 } 

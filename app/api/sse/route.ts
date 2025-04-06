@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
+import { checkAndProcessAutoExit } from '@/lib/autoExit';
+import { fetchRoomData, calculateBackoff, createSystemMessage, ChangeStreamManager } from '@/lib/sseUtils';
+import { ChangeStream, ChangeStreamDocument } from 'mongodb';
 
 export async function GET() {
   console.log('[SSE] Handler started');
@@ -10,104 +13,44 @@ export async function GET() {
     console.log('[SSE] MongoDB connection established');
     const encoder = new TextEncoder();
 
+    // シングルトンのChangeStreamManagerを取得
+    const manager = ChangeStreamManager.getInstance();
+    // このSSE接続を登録
+    manager.registerConnection();
+
     // コントローラーがクローズされたかを追跡するフラグ
     let isControllerClosed = false;
+    // 再接続の試行回数
+    let changeStreamRetryCount = 0;
+    // アクティブなChangeStream
+    let changeStream: ChangeStream | null = null;
 
     const stream = new ReadableStream({
       async start(controller) {
         console.log('[SSE] Stream initialization started');
-        // Function to fetch and format room data
-        const fetchRoomData = async () => {
-          console.log('[SSE] Fetching room data from MongoDB');
-          try {
-            const rooms = await db.collection('rooms').find().toArray();
-            console.log(`[SSE] Retrieved ${rooms.length} rooms`);
-            const seats = await db.collection('seats').find().toArray();
-            console.log(`[SSE] Retrieved ${seats.length} seats`);
 
-            // roomsが空の場合は、シートを直接配列の最初の要素として使用する
-            if (rooms.length === 0) {
-              console.log('[SSE] No rooms found, creating a default room with all seats');
-              const defaultRoom = {
-                id: 'focus-room',
-                type: 'focus',
-                seats: seats.map(seat => ({
-                  id: seat._id.toString(),
-                  username: seat.username,
-                  task: seat.task,
-                  enterTime: seat.enterTime,
-                  autoExitScheduled: seat.autoExitScheduled,
-                  timestamp: seat.timestamp
-                }))
-              };
-              return { rooms: [defaultRoom] };
-            }
-
-            const roomsWithSeats = rooms.map(room => ({
-              id: room._id,
-              seats: seats
-                .filter(seat => seat.room_id === room._id)
-                .sort((a, b) => a.position - b.position)
-                .map(seat => ({
-                  id: seat._id.toString(),
-                  username: seat.username,
-                  task: seat.task,
-                  enterTime: seat.enterTime,
-                  autoExitScheduled: seat.autoExitScheduled,
-                  timestamp: seat.timestamp
-                }))
-            }));
-
-            console.log('[SSE] Room data formatted successfully');
-            return { rooms: roomsWithSeats };
-          } catch (error) {
-            console.error('[SSE] Error fetching room data:', error);
-            return { rooms: [], error: 'Failed to fetch data' };
-          }
-        };
-
-        // 自動退室チェック関数を定義
+        // 自動退室チェック関数
         const checkAutoExit = async () => {
           try {
             console.log('[SSE] 自動退室チェックを実行します');
-            const currentTime = new Date();
             
-            // 期限切れの座席を検索
-            const expiredSeats = await db.collection('seats').find({
-              username: { $ne: null },
-              autoExitScheduled: { $lt: currentTime }
-            }).toArray();
+            // 共通モジュールを使用して自動退室処理を実行（YouTube通知は無効）
+            const results = await checkAndProcessAutoExit(db, false);
             
-            if (expiredSeats.length > 0) {
-              console.log(`[SSE] ${expiredSeats.length}件の期限切れ座席が見つかりました`);
-              
-              // 期限切れの座席を更新
-              for (const seat of expiredSeats) {
-                try {
-                  // 座席を空席に設定
-                  await db.collection('seats').updateOne(
-                    { _id: seat._id },
-                    { 
-                      $set: { 
-                        username: null, 
-                        authorId: null, 
-                        task: null, 
-                        enterTime: null, 
-                        autoExitScheduled: null,
-                        timestamp: new Date()
-                      } 
-                    }
-                  );
-                  console.log(`[SSE] ${seat.username}を自動退室しました (部屋: ${seat.room_id}, 座席: ${seat.position})`);
-                } catch (error) {
-                  console.error(`[SSE] 座席${seat._id}の自動退室処理中にエラーが発生しました:`, error);
-                }
-              }
+            // 処理結果をログ出力
+            if (results.processedCount > 0) {
+              console.log(`[SSE] ${results.processedCount}件の座席を自動退室処理しました`);
               
               // 更新後のデータをクライアントに送信（コントローラーがクローズされていないことを確認）
               if (!isControllerClosed) {
-                const updatedData = await fetchRoomData();
+                const updatedData = await fetchRoomData(db);
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(updatedData)}\n\n`));
+                
+                // システムメッセージも送信
+                controller.enqueue(encoder.encode(
+                  createSystemMessage(`${results.processedCount}人のユーザーが自動退室しました`, 'info')
+                ));
+                
                 console.log('[SSE] 自動退室後のデータをクライアントに送信しました');
               }
             } else {
@@ -118,65 +61,151 @@ export async function GET() {
           }
         };
 
+        // Change Streamを設定する関数（再接続にも使用）
+        const setupChangeStream = async () => {
+          try {
+            // 既存のストリームがあれば閉じる
+            if (changeStream) {
+              await changeStream.close().catch((err: Error) => console.error('[SSE] Error closing previous change stream:', err));
+            }
+            
+            // 新しいストリームを作成
+            console.log('[SSE] Setting up MongoDB change stream');
+            changeStream = db.collection('seats').watch();
+            console.log('[SSE] Change stream initialized');
+            
+            // ChangeStreamマネージャーに自動退室チェック処理を登録
+            const startedNewCheck = manager.startAutoExitCheck(db, checkAutoExit);
+            if (startedNewCheck) {
+              console.log('[SSE] 自動退室チェックの実行を開始しました');
+            } else {
+              console.log('[SSE] 自動退室チェックは他の接続で実行中のため、新規には開始しません');
+            }
+            
+            // 変更検出イベントハンドラ
+            changeStream.on('change', async (changeEvent: ChangeStreamDocument) => {
+              // コントローラーがクローズされていないことを確認
+              if (isControllerClosed) {
+                console.log('[SSE] Controller is already closed, ignoring change event');
+                return;
+              }
+
+              console.log('[SSE] Change detected in seats collection:', JSON.stringify(changeEvent.operationType));
+              try {
+                console.log('[SSE] Fetching updated data after change');
+                const data = await fetchRoomData(db);
+                console.log('[SSE] Sending updated data to client');
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+              } catch (error) {
+                console.error('[SSE] Error processing change stream update:', error);
+                // エラーメッセージをクライアントに送信
+                if (!isControllerClosed) {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
+                  controller.enqueue(encoder.encode(
+                    createSystemMessage('データ更新中にエラーが発生しました', 'error')
+                  ));
+                }
+              }
+            });
+
+            // エラーイベントハンドラ（再接続ロジックを含む）
+            changeStream.on('error', async (error: Error) => {
+              console.error('[SSE] Change stream error:', error);
+              
+              // エラーメッセージをクライアントに送信
+              if (!isControllerClosed) {
+                controller.enqueue(encoder.encode(
+                  createSystemMessage('サーバーとの接続に問題が発生しました。再接続を試みています...', 'warning')
+                ));
+              }
+              
+              // ストリームを閉じる
+              console.log('[SSE] Closing change stream due to error');
+              if (changeStream) {
+                await changeStream.close().catch((err: Error) => console.error('[SSE] Error closing change stream:', err));
+              }
+              
+              // 最大再試行回数を超えていない場合は再接続
+              const MAX_RETRIES = 10;
+              if (changeStreamRetryCount < MAX_RETRIES && !isControllerClosed) {
+                changeStreamRetryCount++;
+                const delayMs = calculateBackoff(changeStreamRetryCount);
+                console.log(`[SSE] Will attempt to reconnect in ${delayMs}ms (retry ${changeStreamRetryCount}/${MAX_RETRIES})`);
+                
+                // 指数バックオフを使用して再接続
+                setTimeout(async () => {
+                  if (!isControllerClosed) {
+                    console.log(`[SSE] Attempting to reconnect to change stream (retry ${changeStreamRetryCount}/${MAX_RETRIES})`);
+                    try {
+                      await setupChangeStream();
+                      // 再接続成功したらリトライカウントをリセット
+                      changeStreamRetryCount = 0;
+                      console.log('[SSE] Successfully reconnected to change stream');
+                      
+                      // 接続回復メッセージ
+                      if (!isControllerClosed) {
+                        controller.enqueue(encoder.encode(
+                          createSystemMessage('サーバーとの接続が回復しました', 'info')
+                        ));
+                        
+                        // 最新データを送信
+                        const refreshedData = await fetchRoomData(db);
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(refreshedData)}\n\n`));
+                      }
+                    } catch (reconnectError) {
+                      console.error('[SSE] Failed to reconnect to change stream:', reconnectError);
+                    }
+                  }
+                }, delayMs);
+              } else if (!isControllerClosed) {
+                console.error(`[SSE] Maximum reconnection attempts (${MAX_RETRIES}) reached or controller closed`);
+                // 最終エラーメッセージ
+                controller.enqueue(encoder.encode(
+                  createSystemMessage('サーバーとの接続が失われました。ページを再読み込みしてください。', 'error')
+                ));
+              }
+            });
+            
+            // 正常に初期化されたらクローズカウントをリセット
+            changeStreamRetryCount = 0;
+          } catch (setupError) {
+            console.error('[SSE] Error setting up change stream:', setupError);
+            throw setupError;
+          }
+        };
+
         try {
-          // Send initial data
+          // 初期データを送信
           console.log('[SSE] Preparing to send initial data');
-          const initialData = await fetchRoomData();
+          const initialData = await fetchRoomData(db);
           console.log('[SSE] Sending initial data to client');
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialData)}\n\n`));
-
-          // Set up change stream
-          console.log('[SSE] Setting up MongoDB change stream');
-          const changeStream = db.collection('seats').watch();
-          console.log('[SSE] Change stream initialized');
           
-          // 自動退室チェックを定期的に実行（1分ごと）
-          const autoExitInterval = setInterval(checkAutoExit, 60000);
-          console.log('[SSE] 自動退室チェックを1分ごとに実行するよう設定しました');
+          // Change Streamを設定
+          await setupChangeStream();
           
-          changeStream.on('change', async (changeEvent) => {
-            // コントローラーがクローズされていないことを確認
-            if (isControllerClosed) {
-              console.log('[SSE] Controller is already closed, ignoring change event');
-              return;
-            }
-
-            console.log('[SSE] Change detected in seats collection:', JSON.stringify(changeEvent.operationType));
-            try {
-              console.log('[SSE] Fetching updated data after change');
-              const data = await fetchRoomData();
-              console.log('[SSE] Sending updated data to client');
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-            } catch (error) {
-              console.error('[SSE] Error processing change stream update:', error);
-              // エラーメッセージをクライアントに送信（コントローラーがクローズされていないことを確認）
-              if (!isControllerClosed) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
-              }
-            }
-          });
-
-          // Handle errors in the change stream
-          changeStream.on('error', (error) => {
-            console.error('[SSE] Change stream error:', error);
-            if (!isControllerClosed) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Connection error' })}\n\n`));
-            }
-            console.log('[SSE] Closing change stream due to error');
-            changeStream.close();
-          });
-
+          // クリーンアップ関数を返す
           return () => {
             console.log('[SSE] Stream cleanup - closing change stream');
-            isControllerClosed = true; // コントローラーがクローズされたことをマーク
-            changeStream.close();
-            // 自動退室チェックのインターバルをクリア
-            clearInterval(autoExitInterval);
-            console.log('[SSE] 自動退室チェックのインターバルをクリアしました');
+            isControllerClosed = true;
+            
+            if (changeStream) {
+              changeStream.close().catch((err: Error) => console.error('[SSE] Error closing change stream during cleanup:', err));
+            }
+            
+            // 接続の登録を解除して、必要に応じて自動退室チェックも停止
+            manager.unregisterConnection();
+            manager.stopAutoExitCheck();
+            
+            console.log('[SSE] Stream cleanup completed');
           };
         } catch (error) {
           console.error('[SSE] Error in stream start:', error);
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Stream initialization failed' })}\n\n`));
+          // エラーメッセージを送信
+          controller.enqueue(encoder.encode(
+            createSystemMessage('ストリームの初期化に失敗しました。ページを再読み込みしてください。', 'error')
+          ));
+          throw error;
         }
       }
     });
