@@ -53,6 +53,9 @@ app/
       route.ts
     commands/
       route.ts
+    debug/
+      check-db/
+        route.ts
     extend-auto-exit/
       route.ts
     seats/
@@ -173,140 +176,6 @@ tsconfig.json
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="components/NotificationTicker.tsx">
-import React, { useState, useEffect, useRef } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-
-// お知らせデータの型
-export interface Notification {
-  id: string; // 一意のID
-  message: string;
-  timestamp: number; // ソートや識別に利用
-  type?: 'info' | 'warning' | 'error'; // タイプに応じてスタイル変更も可能
-}
-
-interface NotificationTickerProps {
-  notifications: Notification[]; // 親コンポーネントから渡される通知リスト (最新が先頭)
-  intervalDuration?: number; // 表示切り替え間隔（ミリ秒）
-  className?: string;
-}
-
-const DEFAULT_INTERVAL = 5000; // デフォルト5秒
-
-const NotificationTicker: React.FC<NotificationTickerProps> = ({
-  notifications,
-  intervalDuration = DEFAULT_INTERVAL,
-  className = '',
-}) => {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isPaused, setIsPaused] = useState(false);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const prevNotificationsRef = useRef<Notification[]>([]);
-
-  // notifications配列が更新されたらcurrentIndexを0に戻す
-  useEffect(() => {
-    // 最新の通知IDが変わったか、または通知が初めて追加された場合
-    if (
-        notifications.length > 0 &&
-        prevNotificationsRef.current.length > 0 &&
-        notifications[0].id !== prevNotificationsRef.current[0].id
-       ) {
-         console.log('[Ticker] New notification detected, resetting index.');
-         setCurrentIndex(0);
-         // インターバルを即座にリセットして新しい通知から開始
-         startInterval();
-    } else if (notifications.length === 1 && prevNotificationsRef.current.length === 0) {
-        console.log('[Ticker] First notification added, setting index to 0.');
-        setCurrentIndex(0);
-    } else if (notifications.length > 0 && currentIndex >= notifications.length) {
-        // 通知が削除されてインデックスが範囲外になった場合
-        console.log('[Ticker] Index out of bounds due to notification removal, resetting index.');
-        setCurrentIndex(0);
-    }
-
-    // 現在の通知リストを保存
-    prevNotificationsRef.current = notifications;
-
-  }, [notifications]); // notifications 配列自体が変更されたときのみ実行
-
-  // 自動スクロール用のインターバル設定
-  const startInterval = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (!isPaused && notifications.length > 1) {
-      intervalRef.current = setInterval(() => {
-        setCurrentIndex(prev => (prev + 1) % notifications.length);
-      }, intervalDuration);
-    }
-  };
-
-  useEffect(() => {
-    startInterval(); // コンポーネントマウント時、または依存関係変更時にインターバルを開始/再開
-
-    return () => { // クリーンアップ関数
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, [isPaused, notifications.length, intervalDuration]); // isPaused, notifications.length, intervalDuration が変わったら再設定
-
-  // 現在表示する通知を取得
-  const currentNotification = notifications[currentIndex];
-
-  const handleMouseEnter = () => setIsPaused(true);
-  const handleMouseLeave = () => setIsPaused(false);
-
-  // タイプに応じたスタイルを返すヘルパー関数
-  const getNotificationStyle = (type?: 'info' | 'warning' | 'error') => {
-    switch (type) {
-      case 'error': return 'text-red-300';
-      case 'warning': return 'text-yellow-300';
-      default: return 'text-white';
-    }
-  };
-
-  return (
-    <div
-      className={`fixed top-16 left-0 right-0 bg-gray-800/95 text-white py-2 px-4 z-20 overflow-hidden h-10 flex items-center backdrop-blur-sm shadow-lg ${className}`} // ヘッダーの高さに応じて top を調整
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-      role="region"
-      aria-live="polite" // スクリーンリーダーに更新を通知
-      aria-atomic="true"
-    >
-      {notifications.length === 0 ? (
-        <span className="text-sm opacity-60 w-full text-center">お知らせはありません</span>
-      ) : (
-        <div className="w-full text-center relative h-full flex items-center justify-center">
-          {/* AnimatePresenceで切り替えアニメーション */}
-          <AnimatePresence initial={false} mode="wait">
-            <motion.span
-              key={currentNotification?.id ?? 'empty'} // key を変更して再レンダリングをトリガー
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.4, ease: "easeInOut" }}
-              className={`text-sm absolute inset-0 flex items-center justify-center truncate px-10 ${getNotificationStyle(currentNotification?.type)}`} // 中央揃え + Truncate
-              aria-label={`お知らせ ${currentIndex + 1}/${notifications.length}`}
-            >
-              {currentNotification?.message}
-            </motion.span>
-          </AnimatePresence>
-
-          {/* ページネーション表示 (オプション) */}
-          {notifications.length > 1 && (
-             <div className="absolute bottom-1 right-2 text-xs opacity-50 select-none">
-               {currentIndex + 1} / {notifications.length}
-             </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default NotificationTicker;
-</file>
 
 <file path=".cursor/rules/project-rules.mdc">
 ---
@@ -685,65 +554,83 @@ function UserCard(props) {
 - エラー時の再接続ロジックを実装
 </file>
 
-<file path="app/api/commands/route.ts">
+<file path="app/api/debug/check-db/route.ts">
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
-import { processCommand } from '@/lib/youtube';
 
-interface CommandRequest {
-  command: string;
-  username: string;
-  videoId?: string;
-  liveChatId?: string;
-  authorId?: string;
-  taskName?: string;
-}
+export async function GET(request: Request) {
+  // セキュリティ上、本番環境ではこのAPIを無効化すべき
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'This endpoint is only available in development' }, { status: 403 });
+  }
 
-export const dynamic = 'force-dynamic'; 
-
-/**
- * YouTube コマンド実行APIエンドポイント
- * コメント取得ロジックから分離され、コマンド処理のみを担当
- */
-export async function POST(request: Request) {
-  console.log('[API] Command execution request received');
-  
   try {
-    // リクエストボディを解析
-    const body: CommandRequest = await request.json();
-    const { command, username, videoId, liveChatId, authorId, taskName } = body;
-    
-    if (!command || !username) {
-      console.error('[API] Invalid command request: Missing required fields');
-      return NextResponse.json(
-        { error: 'Missing required fields: command and username are required' },
-        { status: 400 }
-      );
-    }
-    
-    console.log(`[API] Processing command: "${command}" from user: ${username}`);
-    
-    // MongoDBに接続
+    // MongoDBクライアントを取得
     const client = await clientPromise;
     const db = client.db('coworking');
+
+    // URLからパラメータを取得
+    const url = new URL(request.url);
+    const command = url.searchParams.get('command');
+    const username = url.searchParams.get('username');
+    const profileImageUrl = url.searchParams.get('profileImageUrl');
+
+    console.log(`[Debug API] Checking database for user: ${username}, command: ${command}`);
+    console.log(`[Debug API] Profile image URL: ${profileImageUrl || 'none'}`);
+
+    // ユーザー名に関連するレコードを取得
+    const seats = await db.collection('seats')
+      .find({ username: new RegExp(username || '', 'i') })
+      .limit(10)
+      .toArray();
+
+    // 全ルームを取得（デバッグ用）
+    const rooms = await db.collection('rooms')
+      .find()
+      .limit(10)
+      .toArray();
+
+    // 全ての席を取得してプロフィール画像がある席を数える
+    const allSeats = await db.collection('seats')
+      .find()
+      .limit(100)
+      .toArray();
+
+    const seatsWithProfileImage = allSeats.filter(seat => 
+      seat.profileImageUrl !== null && 
+      seat.profileImageUrl !== undefined && 
+      seat.profileImageUrl !== '');
+
+    console.log(`[Debug API] Found ${seatsWithProfileImage.length} seats with profile images out of ${allSeats.length || 0} total seats`);
     
-    // commandを処理
-    const result = await processCommand(command, username, db, videoId, liveChatId, authorId, taskName);
-    
-    // 結果を返却
-    return NextResponse.json({ 
-      success: true, 
-      result,
-      message: `Command '${command}' from ${username} processed successfully` 
+    if (seatsWithProfileImage.length > 0) {
+      console.log('[Debug API] Sample seat with profile image:', {
+        username: seatsWithProfileImage[0].username,
+        profileImageUrl: seatsWithProfileImage[0].profileImageUrl,
+        roomId: seatsWithProfileImage[0].room_id
+      });
+    }
+
+    return NextResponse.json({
+      message: `Database check completed for user: ${username}`,
+      foundSeats: seats.length || 0,
+      rooms: rooms.length || 0,
+      seats: seats.map(seat => ({
+        id: seat._id.toString(),
+        username: seat.username,
+        roomId: seat.room_id,
+        authorId: seat.authorId,
+        taskName: seat.task,
+        profileImageUrl: seat.profileImageUrl,
+        enterTime: seat.enterTime,
+        timestamp: seat.timestamp
+      })),
+      totalSeats: allSeats.length || 0,
+      seatsWithProfileImage: seatsWithProfileImage.length
     });
-    
   } catch (error) {
-    console.error('[API] Error processing command:', error);
-    
-    return NextResponse.json(
-      { error: 'Failed to process command', details: (error as Error).message },
-      { status: 500 }
-    );
+    console.error('[Debug API] Unexpected error:', error);
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 </file>
@@ -858,85 +745,6 @@ export async function POST(request: Request) {
   } catch (error) {
     return NextResponse.json(
       { error: 'Internal server error' },
-      { status: 500 }
-    );
-  }
-}
-</file>
-
-<file path="app/api/youtube/route.ts">
-import { NextResponse } from 'next/server';
-import clientPromise from '@/lib/mongodb';
-import { processYouTubeComment } from '@/lib/youtube';
-
-interface YouTubeCommentRequest {
-  comment: string;
-  authorName: string;
-  authorId: string;
-  commentId: string;
-  videoId?: string;
-  profileImageUrl: string;
-}
-
-export async function POST(request: Request) {
-  console.log('[YouTube API] コメントリクエスト受信');
-  
-  try {
-    // リクエストボディを解析
-    const body: YouTubeCommentRequest = await request.json();
-    const { comment, authorName, authorId, commentId, videoId, profileImageUrl } = body;
-    
-    if (!comment || !authorName || !authorId || !commentId) {
-      console.error('[YouTube API] 無効なリクエスト: 必須フィールドが不足');
-      return NextResponse.json(
-        { error: '必須フィールドが不足しています: comment, authorName, authorId, commentId が必要です' },
-        { status: 400 }
-      );
-    }
-    
-    console.log(`[YouTube API] コメント処理: "${comment}" from ${authorName} (ID: ${authorId})`);
-    
-    // MongoDBに接続
-    const client = await clientPromise;
-    const db = client.db('coworking');
-    
-    // コメントからコマンドを抽出して処理
-    const result = await processYouTubeComment(comment, authorName, authorId, db, videoId, profileImageUrl);
-    
-    // コマンドでない場合は処理不要
-    if (!result.success && result.message === 'コメントはコマンドではありません') {
-      console.log('[YouTube API] コメントはコマンドではないため、処理をスキップします');
-      return NextResponse.json({ 
-        success: false, 
-        ignored: true,
-        message: 'コメントはコマンドではないため、処理されませんでした' 
-      });
-    }
-    
-    // エラーが発生した場合
-    if (!result.success) {
-      console.error('[YouTube API] コマンド処理エラー:', result.error);
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: result.error || 'コマンド処理に失敗しました' 
-        },
-        { status: 500 }
-      );
-    }
-    
-    // 成功レスポンス
-    return NextResponse.json({ 
-      success: true, 
-      result: result.result,
-      message: `コメント: "${comment}" からのコマンドを正常に処理しました` 
-    });
-    
-  } catch (error) {
-    console.error('[YouTube API] リクエスト処理エラー:', error);
-    
-    return NextResponse.json(
-      { error: 'コメント処理に失敗しました', details: (error as Error).message },
       { status: 500 }
     );
   }
@@ -5689,136 +5497,138 @@ export default function Console() {
 }
 </file>
 
-<file path="components/FocusRoom.tsx">
-import { useEffect, useState, useRef } from "react";
-import { Badge } from "@/components/ui/badge";
-import { VolumeX } from "lucide-react";
-import UserCard from "@/components/UserCard";
+<file path="components/NotificationTicker.tsx">
+import React, { useState, useEffect, useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
-interface Seat {
-  id: string;
-  username: string | null;
-  task?: string | null;
-  enterTime?: Date | string | null;
-  autoExitScheduled?: Date | string | null;
-  profileImageUrl?: string | null;
-  timestamp: Date | string;
+// お知らせデータの型
+export interface Notification {
+  id: string; // 一意のID
+  message: string;
+  timestamp: number; // ソートや識別に利用
+  type?: 'info' | 'warning' | 'error'; // タイプに応じてスタイル変更も可能
 }
 
-interface FocusRoomProps {
-  seats: Seat[];
-  roomId: string;
+interface NotificationTickerProps {
+  notifications: Notification[]; // 親コンポーネントから渡される通知リスト (最新が先頭)
+  intervalDuration?: number; // 表示切り替え間隔（ミリ秒）
+  className?: string;
 }
 
-export default function FocusRoom({ seats, roomId }: FocusRoomProps) {
-  const [currentUserPage, setCurrentUserPage] = useState(0);
-  const [userAnimationState, setUserAnimationState] = useState("idle");
-  const [nextUserPageToShow, setNextUserPageToShow] = useState(1);
-  const userSliderRef = useRef(null);
-  
-  const USERS_PER_PAGE = 8; // 2x4グリッドの場合
-  const activeSeats = seats.filter(seat => seat.username !== null);
-  const TOTAL_USER_PAGES = Math.ceil(activeSeats.length / USERS_PER_PAGE) || 1;
-  
+const DEFAULT_INTERVAL = 5000; // デフォルト5秒
+
+const NotificationTicker: React.FC<NotificationTickerProps> = ({
+  notifications,
+  intervalDuration = DEFAULT_INTERVAL,
+  className = '',
+}) => {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const prevNotificationsRef = useRef<Notification[]>([]);
+
+  // notifications配列が更新されたらcurrentIndexを0に戻す
   useEffect(() => {
-    // 5秒ごとに自動でページを切り替え
-    const pageInterval = setInterval(() => {
-      if (TOTAL_USER_PAGES <= 1) return; // 1ページ以下の場合は切り替えない
-      
-      const nextPage = (currentUserPage + 1) % TOTAL_USER_PAGES;
-      setNextUserPageToShow(nextPage);
-      setUserAnimationState("sliding-out");
-      
-      // アニメーション処理
-      setTimeout(() => {
-        setCurrentUserPage(nextPage);
-        setUserAnimationState("sliding-in");
-        setTimeout(() => setUserAnimationState("idle"), 800);
-      }, 800);
-    }, 5000);
-    
-    return () => clearInterval(pageInterval);
-  }, [currentUserPage, TOTAL_USER_PAGES]);
-  
-  // 現在のページのユーザーを取得
-  const getCurrentPageUsers = () => {
-    const startIndex = currentUserPage * USERS_PER_PAGE;
-    return activeSeats.slice(startIndex, startIndex + USERS_PER_PAGE);
+    // 最新の通知IDが変わったか、または通知が初めて追加された場合
+    if (
+        notifications.length > 0 &&
+        prevNotificationsRef.current.length > 0 &&
+        notifications[0].id !== prevNotificationsRef.current[0].id
+       ) {
+         console.log('[Ticker] New notification detected, resetting index.');
+         setCurrentIndex(0);
+         // インターバルを即座にリセットして新しい通知から開始
+         startInterval();
+    } else if (notifications.length === 1 && prevNotificationsRef.current.length === 0) {
+        console.log('[Ticker] First notification added, setting index to 0.');
+        setCurrentIndex(0);
+    } else if (notifications.length > 0 && currentIndex >= notifications.length) {
+        // 通知が削除されてインデックスが範囲外になった場合
+        console.log('[Ticker] Index out of bounds due to notification removal, resetting index.');
+        setCurrentIndex(0);
+    }
+
+    // 現在の通知リストを保存
+    prevNotificationsRef.current = notifications;
+
+  }, [notifications]); // notifications 配列自体が変更されたときのみ実行
+
+  // 自動スクロール用のインターバル設定
+  const startInterval = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (!isPaused && notifications.length > 1) {
+      intervalRef.current = setInterval(() => {
+        setCurrentIndex(prev => (prev + 1) % notifications.length);
+      }, intervalDuration);
+    }
   };
-  
-  // 次のページのユーザーを取得
-  const getNextPageUsers = () => {
-    const startIndex = nextUserPageToShow * USERS_PER_PAGE;
-    return activeSeats.slice(startIndex, startIndex + USERS_PER_PAGE);
+
+  useEffect(() => {
+    startInterval(); // コンポーネントマウント時、または依存関係変更時にインターバルを開始/再開
+
+    return () => { // クリーンアップ関数
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [isPaused, notifications.length, intervalDuration]); // isPaused, notifications.length, intervalDuration が変わったら再設定
+
+  // 現在表示する通知を取得
+  const currentNotification = notifications[currentIndex];
+
+  const handleMouseEnter = () => setIsPaused(true);
+  const handleMouseLeave = () => setIsPaused(false);
+
+  // タイプに応じたスタイルを返すヘルパー関数
+  const getNotificationStyle = (type?: 'info' | 'warning' | 'error') => {
+    switch (type) {
+      case 'error': return 'text-red-300';
+      case 'warning': return 'text-yellow-300';
+      default: return 'text-white';
+    }
   };
 
   return (
-    <div className="bg-[#f2f2f2]/95 rounded-lg shadow-md overflow-hidden mb-4">
-      <div className="p-4 flex justify-between items-center border-b border-gray-200">
-        <div className="flex items-center gap-2">
-          <VolumeX className="h-5 w-5 text-red-500" />
-          <h3 className="text-lg font-medium">フォーカスルーム</h3>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge className="bg-red-500 text-white text-xs px-2 py-0.5">会話不可</Badge>
-          <Badge variant="outline" className="bg-white text-gray-600 border-gray-300">{activeSeats.length}人</Badge>
-        </div>
-      </div>
+    <div
+      className={`fixed top-16 left-0 right-0 bg-gray-800/95 text-white py-2 px-4 z-20 overflow-hidden h-10 flex items-center backdrop-blur-sm shadow-lg ${className}`} // ヘッダーの高さに応じて top を調整
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      role="region"
+      aria-live="polite" // スクリーンリーダーに更新を通知
+      aria-atomic="true"
+    >
+      {notifications.length === 0 ? (
+        <span className="text-sm opacity-60 w-full text-center">お知らせはありません</span>
+      ) : (
+        <div className="w-full text-center relative h-full flex items-center justify-center">
+          {/* AnimatePresenceで切り替えアニメーション */}
+          <AnimatePresence initial={false} mode="wait">
+            <motion.span
+              key={currentNotification?.id ?? 'empty'} // key を変更して再レンダリングをトリガー
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.4, ease: "easeInOut" }}
+              className={`text-sm absolute inset-0 flex items-center justify-center truncate px-10 ${getNotificationStyle(currentNotification?.type)}`} // 中央揃え + Truncate
+              aria-label={`お知らせ ${currentIndex + 1}/${notifications.length}`}
+            >
+              {currentNotification?.message}
+            </motion.span>
+          </AnimatePresence>
 
-      <div className="relative min-h-[400px]" ref={userSliderRef}>
-        <div className="p-4">
-          <div
-            className={`grid grid-cols-2 md:grid-cols-4 gap-4 transition-all duration-800 ease-in-out ${
-              userAnimationState === "sliding-out"
-                ? "card-slide-out"
-                : userAnimationState === "sliding-in"
-                  ? "card-slide-in"
-                  : ""
-            }`}
-          >
-            {userAnimationState === "sliding-in"
-              ? getNextPageUsers().map(seat => (
-                  <UserCard 
-                    key={seat.id} 
-                    user={{
-                      id: seat.id,
-                      name: seat.username || '',
-                      task: seat.task,
-                      enterTime: seat.enterTime,
-                      profileImageUrl: seat.profileImageUrl
-                    }} 
-                  />
-                ))
-              : getCurrentPageUsers().map(seat => (
-                  <UserCard 
-                    key={seat.id} 
-                    user={{
-                      id: seat.id,
-                      name: seat.username || '',
-                      task: seat.task,
-                      enterTime: seat.enterTime,
-                      profileImageUrl: seat.profileImageUrl
-                    }} 
-                  />
-                ))
-            }
-          </div>
+          {/* ページネーション表示 (オプション) */}
+          {notifications.length > 1 && (
+             <div className="absolute bottom-1 right-2 text-xs opacity-50 select-none">
+               {currentIndex + 1} / {notifications.length}
+             </div>
+          )}
         </div>
-      </div>
-
-      <div className="px-4 py-2 bg-gray-100 border-t border-gray-200 flex justify-center">
-        <div className="flex gap-2">
-          {Array.from({ length: TOTAL_USER_PAGES }).map((_, index) => (
-            <div
-              key={index}
-              className={`w-2 h-2 rounded-full ${currentUserPage === index ? "bg-amber-500" : "bg-gray-300"}`}
-            />
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
-}
+};
+
+export default NotificationTicker;
 </file>
 
 <file path="components/Room.tsx">
@@ -7355,109 +7165,6 @@ export const usePomodoro = () => {
 };
 </file>
 
-<file path="hooks/use-seat-data.ts">
-import { useState, useCallback } from 'react';
-import { useSSE, SSEConnectionState } from './use-sse';
-import { toast } from './use-toast';
-
-export interface Seat {
-  id: string;
-  username: string | null;
-  task?: string | null;
-  enterTime?: Date | string | null;
-  autoExitScheduled?: Date | string | null;
-  timestamp: Date | string;
-}
-
-export interface RoomData {
-  id: string;
-  seats: Seat[];
-  type?: 'focus' | 'chat';
-}
-
-interface SSEData {
-  rooms: RoomData[];
-  error?: string;
-}
-
-interface UseSeatDataResult {
-  rooms: RoomData[];
-  isLoading: boolean;
-  connectionState: SSEConnectionState;
-  refreshData: () => void;
-}
-
-/**
- * 座席データ管理のためのカスタムフック
- * SSE接続とデータ処理を行う
- */
-export function useSeatData(): UseSeatDataResult {
-  const [rooms, setRooms] = useState<RoomData[]>([]);
-
-  // システムメッセージを処理するコールバック
-  const handleSystemMessage = useCallback((message: { message: string; type: 'info' | 'warning' | 'error' }) => {
-    // トースト通知を表示
-    toast({
-      title: message.type === 'error' ? 'エラー' : 
-             message.type === 'warning' ? '警告' : 'お知らせ',
-      description: message.message,
-      variant: message.type === 'error' ? 'destructive' : 'default',
-    });
-  }, []);
-
-  // SSEデータを処理するコールバック
-  const handleMessage = useCallback((data: SSEData) => {
-    if (data.rooms && Array.isArray(data.rooms)) {
-      console.log(`[SeatData] Received ${data.rooms.length} rooms from SSE`);
-      setRooms(data.rooms);
-    } else if (data.error) {
-      console.error('[SeatData] Error in SSE data:', data.error);
-      toast({
-        title: 'データ取得エラー',
-        description: data.error,
-        variant: 'destructive',
-      });
-    }
-  }, []);
-
-  // SSE接続を使用してデータを取得
-  const { 
-    data,
-    connectionState,
-    connect: refreshData
-  } = useSSE<SSEData>({
-    endpoint: '/api/sse',
-    onMessage: handleMessage,
-    onSystemMessage: handleSystemMessage,
-    onConnect: () => {
-      console.log('[SeatData] SSE connection established');
-    },
-    onDisconnect: () => {
-      console.log('[SeatData] SSE connection closed');
-    },
-    onError: (error) => {
-      console.error('[SeatData] SSE connection error:', error);
-    },
-    maxRetries: 5, // 最大再試行回数
-    initialBackoffDelay: 2000, // 初期バックオフ（2秒）
-    maxBackoffDelay: 30000, // 最大バックオフ（30秒）
-  });
-
-  // 接続状態からローディング状態を判断
-  const isLoading = 
-    connectionState === 'connecting' || 
-    connectionState === 'reconnecting' || 
-    (connectionState === 'connected' && !data);
-
-  return {
-    rooms,
-    isLoading,
-    connectionState,
-    refreshData
-  };
-}
-</file>
-
 <file path="hooks/use-sse.ts">
 import { useState, useEffect, useRef, useCallback } from 'react';
 
@@ -8319,200 +8026,6 @@ export const messageTemplates: MessageTemplate = {
 };
 </file>
 
-<file path="lib/mongodb.ts">
-import { MongoClient } from 'mongodb';
-
-if (!process.env.MONGODB_URI) {
-  throw new Error('Please add your Mongo URI to .env.local');
-}
-
-const uri = process.env.MONGODB_URI;
-const options = {};
-
-let client;
-let clientPromise: Promise<MongoClient>;
-
-if (process.env.NODE_ENV === 'development') {
-  // In development mode, use a global variable so that the value
-  // is preserved across module reloads caused by HMR (Hot Module Replacement).
-  let globalWithMongo = global as typeof globalThis & {
-    _mongoClientPromise?: Promise<MongoClient>;
-  };
-
-  if (!globalWithMongo._mongoClientPromise) {
-    client = new MongoClient(uri, options);
-    globalWithMongo._mongoClientPromise = client.connect();
-  }
-  clientPromise = globalWithMongo._mongoClientPromise;
-} else {
-  // In production mode, it's best to not use a global variable.
-  client = new MongoClient(uri, options);
-  clientPromise = client.connect();
-}
-
-export default clientPromise;
-
-export type Room = {
-  _id: string;
-  created_at: Date;
-};
-
-export type Seat = {
-  _id: string;
-  room_id: string;
-  position: number;
-  username: string | null;
-  authorId: string | null;
-  task: string | null;
-  enterTime: Date | null;
-  autoExitScheduled: Date | null;
-  profileImageUrl: string | null;
-  timestamp: Date;
-  created_at: Date;
-};
-</file>
-
-<file path="lib/sseUtils.ts">
-import { Db } from 'mongodb';
-
-/**
- * MongoDB から部屋と座席のデータを取得し、クライアント用にフォーマットする
- * @param db MongoDB データベース接続
- * @returns フォーマットされた部屋と座席のデータ
- */
-export async function fetchRoomData(db: Db) {
-  console.log('[SSE:Utils] Fetching room data from MongoDB');
-  try {
-    const rooms = await db.collection('rooms').find().toArray();
-    console.log(`[SSE:Utils] Retrieved ${rooms.length} rooms`);
-    const seats = await db.collection('seats').find().toArray();
-    console.log(`[SSE:Utils] Retrieved ${seats.length} seats`);
-
-    // roomsが空の場合は、シートを直接配列の最初の要素として使用する
-    if (rooms.length === 0) {
-      console.log('[SSE:Utils] No rooms found, creating a default room with all seats');
-      const defaultRoom = {
-        id: 'focus-room',
-        type: 'focus',
-        seats: seats.map(seat => ({
-          id: seat._id.toString(),
-          username: seat.username,
-          task: seat.task,
-          enterTime: seat.enterTime,
-          autoExitScheduled: seat.autoExitScheduled,
-          timestamp: seat.timestamp
-        }))
-      };
-      return { rooms: [defaultRoom] };
-    }
-
-    const roomsWithSeats = rooms.map(room => ({
-      id: room._id,
-      seats: seats
-        .filter(seat => seat.room_id === room._id)
-        .sort((a, b) => a.position - b.position)
-        .map(seat => ({
-          id: seat._id.toString(),
-          username: seat.username,
-          task: seat.task,
-          enterTime: seat.enterTime,
-          autoExitScheduled: seat.autoExitScheduled,
-          timestamp: seat.timestamp
-        }))
-    }));
-
-    console.log('[SSE:Utils] Room data formatted successfully');
-    return { rooms: roomsWithSeats };
-  } catch (error) {
-    console.error('[SSE:Utils] Error fetching room data:', error);
-    return { rooms: [], error: 'Failed to fetch data' };
-  }
-}
-
-/**
- * 指数バックオフ付きの再接続試行回数とタイムアウトを計算する
- * @param retryCount 現在の試行回数
- * @param baseDelay 基本の待機時間（ミリ秒）
- * @param maxDelay 最大待機時間（ミリ秒）
- * @returns 次回待機時間（ミリ秒）
- */
-export function calculateBackoff(retryCount: number, baseDelay: number = 1000, maxDelay: number = 30000): number {
-  // 指数バックオフ（2のべき乗）とランダム要素（ジッター）を加える
-  const exponentialDelay = Math.min(
-    maxDelay,
-    baseDelay * Math.pow(2, retryCount) * (1 + Math.random() * 0.2)
-  );
-  return Math.round(exponentialDelay);
-}
-
-/**
- * システムメッセージをクライアントに送信するためのSSEメッセージを生成する
- * @param message メッセージ内容
- * @param type メッセージタイプ（info, warning, error など）
- * @returns フォーマットされたSSEメッセージ
- */
-export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info'): string {
-  return `event: system-message\ndata: ${JSON.stringify({ message, type, timestamp: new Date().toISOString() })}\n\n`;
-}
-
-/**
- * MongoDB Change Streamの接続状態を追跡するためのクラス
- * グローバルな状態を管理し、複数のSSE接続間で自動退室チェックの重複を防ぐ
- */
-export class ChangeStreamManager {
-  private static instance: ChangeStreamManager;
-  private activeConnections: number = 0;
-
-  private constructor() {}
-
-  public static getInstance(): ChangeStreamManager {
-    if (!ChangeStreamManager.instance) {
-      ChangeStreamManager.instance = new ChangeStreamManager();
-    }
-    return ChangeStreamManager.instance;
-  }
-
-  /**
-   * 新しいSSE接続を登録する
-   * @returns 登録後のアクティブ接続数
-   */
-  public registerConnection(): number {
-    this.activeConnections++;
-    console.log(`[SSE:Manager] New connection registered. Active connections: ${this.activeConnections}`);
-    // 最初の接続が登録されたことを示すフラグを返す
-    return this.activeConnections;
-  }
-
-  /**
-   * SSE接続の終了を登録する
-   * @returns 残りのアクティブ接続数
-   */
-  public unregisterConnection(): number {
-    this.activeConnections = Math.max(0, this.activeConnections - 1);
-    console.log(`[SSE:Manager] Connection unregistered. Active connections: ${this.activeConnections}`);
-    return this.activeConnections;
-  }
-
-  /**
-   * 現在のアクティブな接続数を取得する
-   * @returns アクティブな接続数
-   */
-  public getActiveConnections(): number {
-    return this.activeConnections;
-  }
-
-  /**
-   * このインスタンスで自動退室チェックを開始すべきか判断する
-   * (通常、最初の接続時にtrueを返す)
-   * @returns 開始すべきならtrue
-   */
-  public shouldStartAutoExitCheckOnRegister(): boolean {
-    // activeConnectionsがインクリメントされた直後に呼ばれる想定
-    return this.activeConnections === 1;
-  }
-}
-</file>
-
 <file path="lib/store.ts">
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -8726,133 +8239,6 @@ export const usePomodoroStore = create<PomodoroState>()(
     }
   )
 );
-</file>
-
-<file path="lib/types.ts">
-// クライアント・サーバー共通の型定義
-
-/**
- * YouTube API の型定義
- */
-export interface Author {
-  displayName: string;
-  profileImageUrl: string;
-  channelId: string;
-}
-
-export interface MessageSnippet {
-  displayMessage: string;
-  publishedAt: string;
-}
-
-export interface ChatItem {
-  id: string;
-  snippet: MessageSnippet;
-  authorDetails: Author;
-}
-
-export interface ChatResponse {
-  items: ChatItem[];
-  nextPageToken: string;
-  pollingIntervalMillis: number;
-}
-
-/**
- * 自動退室状態の型定義
- */
-export interface AutoExitStatus {
-  isScheduled: boolean;
-  scheduledTime: Date | null;
-  remainingTime: number | null; // ミリ秒単位
-  formattedTime: string | null; // 表示用フォーマット
-}
-
-/**
- * 座席の型定義
- */
-export interface Seat {
-  id: string;
-  room_id: string;
-  position: number;
-  username: string | null;
-  authorId?: string | null;
-  task?: string | null;
-  enterTime?: Date | string | null;
-  autoExitScheduled?: Date | string | null;
-  profileImageUrl?: string | null;
-  timestamp: Date | string;
-}
-
-/**
- * ユーザーカード用の型定義（クライアント側で使用）
- */
-export interface UserCardData {
-  id: string;
-  name: string;
-  avatar?: string;
-  task?: string | null;
-  autoExitScheduled?: Date | string | null;
-  enterTime?: Date | string | null;
-}
-
-/**
- * コマンド実行結果の型定義
- */
-export interface CommandResult {
-  success: boolean;
-  action?: 'enter' | 'exit' | 'update' | 'none' | 'create';
-  seat?: {
-    roomId: string;
-    position: number;
-    username?: string | null;
-    previousUsername?: string;
-    task?: string | null;
-    id?: string;
-  };
-  message?: string;
-  error?: string;
-}
-
-/**
- * YouTube API エラーの型定義
- */
-export class YouTubeAPIError extends Error {
-  status?: number;
-  code?: string;
-  
-  constructor(message: string, status?: number, code?: string) {
-    super(message);
-    this.name = 'YouTubeAPIError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-/**
- * コマンドの型定義
- */
-export interface Command {
-  command: string;
-  taskName?: string;
-  authorName: string;
-  authorId: string;
-  commentId: string;
-  commentText: string;
-}
-
-/**
- * 自動退室機能の処理結果
- */
-export interface AutoExitProcessResult {
-  processedCount: number;
-  details: Array<{
-    username: string | null;
-    roomId: string;
-    position: number;
-    success: boolean;
-    error?: string;
-  }>;
-}
 </file>
 
 <file path="lib/utils.ts">
@@ -9843,6 +9229,1228 @@ export async function GET() {
 }
 </file>
 
+<file path="app/api/commands/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+import { processCommand } from '@/lib/youtube';
+
+interface CommandRequest {
+  command: string;
+  username: string;
+  taskName?: string;
+  authorId?: string;
+  videoId?: string;
+  profileImageUrl?: string;
+}
+
+export const dynamic = 'force-dynamic'; 
+
+/**
+ * YouTube コマンド実行APIエンドポイント
+ * コメント取得ロジックから分離され、コマンド処理のみを担当
+ */
+export async function POST(request: Request) {
+  console.log('[Command API] Command request received');
+  
+  try {
+    const body: CommandRequest = await request.json();
+    const { command, username, taskName, authorId, videoId, profileImageUrl } = body;
+    
+    if (!command || !username) {
+      console.error('[Command API] Invalid request: missing required fields');
+      return NextResponse.json(
+        { error: 'Command and username are required' },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`[Command API] Processing command: ${command} from ${username}`);
+    
+    // デバッグ用: リクエストの全内容を表示
+    console.log('[Command API] Request details:', JSON.stringify({
+      command,
+      username,
+      taskName,
+      authorId,
+      videoId,
+      hasProfileImage: !!profileImageUrl
+    }, null, 2));
+    
+    if (profileImageUrl) {
+      console.log(`[Command API] Profile image URL provided for ${username}: ${profileImageUrl}`);
+    }
+    
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName, profileImageUrl);
+    
+    return NextResponse.json({
+      success: true,
+      result,
+      message: `${command} command executed successfully`
+    });
+  } catch (error) {
+    console.error('[Command API] Error processing command:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to execute command', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/youtube/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+import { processYouTubeComment } from '@/lib/youtube';
+
+interface YouTubeCommentRequest {
+  comment: string;
+  authorName: string;
+  authorId: string;
+  commentId: string;
+  videoId?: string;
+  profileImageUrl?: string;
+}
+
+export async function POST(request: Request) {
+  console.log('[YouTube API] コメントリクエスト受信');
+  
+  try {
+    // リクエストボディを解析
+    const body: YouTubeCommentRequest = await request.json();
+    const { comment, authorName, authorId, commentId, videoId, profileImageUrl } = body;
+    
+    if (!comment || !authorName || !authorId || !commentId) {
+      console.error('[YouTube API] 無効なリクエスト: 必須フィールドが不足');
+      return NextResponse.json(
+        { error: '必須フィールドが不足しています: comment, authorName, authorId, commentId が必要です' },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`[YouTube API] コメント処理: "${comment}" from ${authorName} (ID: ${authorId})`);
+    if (profileImageUrl) {
+      console.log(`[YouTube API] プロフィール画像URL: ${profileImageUrl}`);
+    } else {
+      console.log('[YouTube API] プロフィール画像URLが提供されていません');
+    }
+    
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // コメントからコマンドを抽出して処理
+    const result = await processYouTubeComment(comment, authorName, authorId, db, videoId, profileImageUrl);
+    
+    // コマンドでない場合は処理不要
+    if (!result.success && result.message === 'コメントはコマンドではありません') {
+      console.log('[YouTube API] コメントはコマンドではないため、処理をスキップします');
+      return NextResponse.json({ 
+        success: false, 
+        ignored: true,
+        message: 'コメントはコマンドではないため、処理されませんでした' 
+      });
+    }
+    
+    // エラーが発生した場合
+    if (!result.success) {
+      console.error('[YouTube API] コマンド処理エラー:', result.error);
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: result.error || 'コマンド処理に失敗しました' 
+        },
+        { status: 500 }
+      );
+    }
+    
+    // 成功レスポンス
+    return NextResponse.json({ 
+      success: true, 
+      result: result.result,
+      message: `コメント: "${comment}" からのコマンドを正常に処理しました` 
+    });
+    
+  } catch (error) {
+    console.error('[YouTube API] リクエスト処理エラー:', error);
+    
+    return NextResponse.json(
+      { error: 'コメント処理に失敗しました', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="components/FocusRoom.tsx">
+import { useEffect, useState, useRef } from "react";
+import { Badge } from "@/components/ui/badge";
+import { VolumeX } from "lucide-react";
+import UserCard from "@/components/UserCard";
+
+interface Seat {
+  id: string;
+  username: string | null;
+  task?: string | null;
+  enterTime?: Date | string | null;
+  autoExitScheduled?: Date | string | null;
+  profileImageUrl?: string | null;
+  timestamp: Date | string;
+}
+
+interface FocusRoomProps {
+  seats: Seat[];
+  roomId: string;
+}
+
+export default function FocusRoom({ seats, roomId }: FocusRoomProps) {
+  // デバッグ: 受け取った座席データをログに出力
+  console.log(`[FocusRoom] Received ${seats.length} seats for room ${roomId}`);
+  
+  // プロフィール画像URLを持つ座席をログ出力
+  const seatsWithImages = seats.filter(seat => seat.profileImageUrl && seat.username);
+  if (seatsWithImages.length > 0) {
+    console.log(`[FocusRoom] Found ${seatsWithImages.length} seats with profile images:`);
+    seatsWithImages.forEach(seat => {
+      console.log(`- ${seat.username}: ${seat.profileImageUrl}`);
+    });
+  } else {
+    console.log(`[FocusRoom] No seats with profile images found`);
+  }
+  
+  const [currentUserPage, setCurrentUserPage] = useState(0);
+  const [userAnimationState, setUserAnimationState] = useState("idle");
+  const [nextUserPageToShow, setNextUserPageToShow] = useState(1);
+  const userSliderRef = useRef(null);
+  
+  const USERS_PER_PAGE = 8; // 2x4グリッドの場合
+  const activeSeats = seats.filter(seat => seat.username !== null);
+  const TOTAL_USER_PAGES = Math.ceil(activeSeats.length / USERS_PER_PAGE) || 1;
+  
+  useEffect(() => {
+    // 5秒ごとに自動でページを切り替え
+    const pageInterval = setInterval(() => {
+      if (TOTAL_USER_PAGES <= 1) return; // 1ページ以下の場合は切り替えない
+      
+      const nextPage = (currentUserPage + 1) % TOTAL_USER_PAGES;
+      setNextUserPageToShow(nextPage);
+      setUserAnimationState("sliding-out");
+      
+      // アニメーション処理
+      setTimeout(() => {
+        setCurrentUserPage(nextPage);
+        setUserAnimationState("sliding-in");
+        setTimeout(() => setUserAnimationState("idle"), 800);
+      }, 800);
+    }, 5000);
+    
+    return () => clearInterval(pageInterval);
+  }, [currentUserPage, TOTAL_USER_PAGES]);
+  
+  // 現在のページのユーザーを取得
+  const getCurrentPageUsers = () => {
+    const startIndex = currentUserPage * USERS_PER_PAGE;
+    return activeSeats.slice(startIndex, startIndex + USERS_PER_PAGE);
+  };
+  
+  // 次のページのユーザーを取得
+  const getNextPageUsers = () => {
+    const startIndex = nextUserPageToShow * USERS_PER_PAGE;
+    return activeSeats.slice(startIndex, startIndex + USERS_PER_PAGE);
+  };
+
+  // デバッグ: 最初のページのユーザーデータをログ出力
+  useEffect(() => {
+    const currentUsers = getCurrentPageUsers();
+    if (currentUsers.length > 0) {
+      console.log(`[FocusRoom] First page users (${currentUsers.length}):`);
+      currentUsers.forEach((user, index) => {
+        console.log(`User ${index}: ${user.username}, profileImageUrl: ${user.profileImageUrl || 'none'}`);
+      });
+    }
+  }, [activeSeats]); // activeSeatsが変わったときだけ実行
+
+  return (
+    <div className="bg-[#f2f2f2]/95 rounded-lg shadow-md overflow-hidden mb-4">
+      <div className="p-4 flex justify-between items-center border-b border-gray-200">
+        <div className="flex items-center gap-2">
+          <VolumeX className="h-5 w-5 text-red-500" />
+          <h3 className="text-lg font-medium">フォーカスルーム</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge className="bg-red-500 text-white text-xs px-2 py-0.5">会話不可</Badge>
+          <Badge variant="outline" className="bg-white text-gray-600 border-gray-300">{activeSeats.length}人</Badge>
+        </div>
+      </div>
+
+      <div className="relative min-h-[400px]" ref={userSliderRef}>
+        <div className="p-4">
+          <div
+            className={`grid grid-cols-2 md:grid-cols-4 gap-4 transition-all duration-800 ease-in-out ${
+              userAnimationState === "sliding-out"
+                ? "card-slide-out"
+                : userAnimationState === "sliding-in"
+                  ? "card-slide-in"
+                  : ""
+            }`}
+          >
+            {userAnimationState === "sliding-in"
+              ? getNextPageUsers().map(seat => (
+                  <UserCard 
+                    key={seat.id} 
+                    user={{
+                      id: seat.id,
+                      name: seat.username || '',
+                      task: seat.task,
+                      enterTime: seat.enterTime,
+                      profileImageUrl: seat.profileImageUrl
+                    }} 
+                  />
+                ))
+              : getCurrentPageUsers().map(seat => (
+                  <UserCard 
+                    key={seat.id} 
+                    user={{
+                      id: seat.id,
+                      name: seat.username || '',
+                      task: seat.task,
+                      enterTime: seat.enterTime,
+                      profileImageUrl: seat.profileImageUrl
+                    }} 
+                  />
+                ))
+            }
+          </div>
+        </div>
+      </div>
+
+      <div className="px-4 py-2 bg-gray-100 border-t border-gray-200 flex justify-center">
+        <div className="flex gap-2">
+          {Array.from({ length: TOTAL_USER_PAGES }).map((_, index) => (
+            <div
+              key={index}
+              className={`w-2 h-2 rounded-full ${currentUserPage === index ? "bg-amber-500" : "bg-gray-300"}`}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/PomodoroTimer.tsx">
+"use client";
+
+import { Play, Pause, RefreshCw, Coffee, TimerIcon, Brain } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { 
+  Card, 
+  CardContent,
+  CardFooter
+} from "@/components/ui/card";
+import { 
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Badge } from "@/components/ui/badge";
+import { usePomodoro } from "@/hooks/use-pomodoro";
+import { POMODORO_MODES, TimerMode } from "@/lib/store";
+
+export default function PomodoroTimer() {
+  const {
+    mode,
+    formattedTimeLeft,
+    isActive,
+    progress,
+    workSessionsCompleted,
+    currentMode,
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    switchMode
+  } = usePomodoro();
+
+  return (
+    <Card className="w-full max-w-sm mx-auto">
+      <CardContent className="pt-6">
+        <div className="flex justify-between items-center mb-4">
+          <div className="flex items-center gap-2">
+            <TimerIcon className="h-5 w-5 text-amber-500" />
+            <h3 className="text-lg font-medium">ポモドーロタイマー</h3>
+          </div>
+          
+          <Badge 
+            variant="outline" 
+            className={`${currentMode.color} text-white`}
+          >
+            {currentMode.name}
+          </Badge>
+        </div>
+        
+        <div className="text-center my-8">
+          <div className="text-4xl font-bold tracking-tighter">
+            {formattedTimeLeft}
+          </div>
+        </div>
+        
+        <Progress 
+          value={progress} 
+          className={`h-2 ${currentMode.color}`} 
+        />
+        
+        <div className="flex justify-between mt-2 text-xs text-muted-foreground">
+          <span>0:00</span>
+          <span>
+            {mode === 'WORK' ? '25:00' : mode === 'BREAK' ? '5:00' : '15:00'}
+          </span>
+        </div>
+
+        <div className="flex justify-center gap-2 mt-6">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => switchMode('WORK')}
+                  className={`rounded-full ${mode === 'WORK' ? 'border-amber-500 border-2' : ''}`}
+                >
+                  <Brain className="h-4 w-4 text-amber-500" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>作業モード (25分)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => switchMode('BREAK')}
+                  className={`rounded-full ${mode === 'BREAK' ? 'border-green-500 border-2' : ''}`}
+                >
+                  <Coffee className="h-4 w-4 text-green-500" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>休憩モード (5分)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      </CardContent>
+      
+      <CardFooter className="flex justify-between pt-0">
+        <div className="text-sm text-muted-foreground">
+          作業完了: <span className="font-medium">{workSessionsCompleted}回</span>
+        </div>
+        
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={resetTimer}
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          
+          {isActive ? (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={pauseTimer}
+            >
+              <Pause className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              variant="default"
+              size="icon"
+              onClick={startTimer}
+            >
+              <Play className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      </CardFooter>
+    </Card>
+  );
+}
+</file>
+
+<file path="hooks/use-seat-data.ts">
+import { useState, useCallback } from 'react';
+import { useSSE, SSEConnectionState } from './use-sse';
+import { toast } from './use-toast';
+
+export interface Seat {
+  id: string;
+  username: string | null;
+  task?: string | null;
+  enterTime?: Date | string | null;
+  autoExitScheduled?: Date | string | null;
+  profileImageUrl?: string | null;
+  timestamp: Date | string;
+}
+
+export interface RoomData {
+  id: string;
+  seats: Seat[];
+  type?: 'focus' | 'chat';
+}
+
+interface SSEData {
+  rooms: RoomData[];
+  error?: string;
+}
+
+interface UseSeatDataResult {
+  rooms: RoomData[];
+  isLoading: boolean;
+  connectionState: SSEConnectionState;
+  refreshData: () => void;
+}
+
+/**
+ * 座席データ管理のためのカスタムフック
+ * SSE接続とデータ処理を行う
+ */
+export function useSeatData(): UseSeatDataResult {
+  const [rooms, setRooms] = useState<RoomData[]>([]);
+
+  // システムメッセージを処理するコールバック
+  const handleSystemMessage = useCallback((message: { message: string; type: 'info' | 'warning' | 'error' }) => {
+    // トースト通知を表示
+    toast({
+      title: message.type === 'error' ? 'エラー' : 
+             message.type === 'warning' ? '警告' : 'お知らせ',
+      description: message.message,
+      variant: message.type === 'error' ? 'destructive' : 'default',
+    });
+  }, []);
+
+  // SSEデータを処理するコールバック
+  const handleMessage = useCallback((data: SSEData) => {
+    if (data.rooms && Array.isArray(data.rooms)) {
+      console.log(`[SeatData] Received ${data.rooms.length} rooms from SSE`);
+      
+      // デバッグ用: プロフィール画像URLを持つ座席をログ出力
+      data.rooms.forEach(room => {
+        room.seats.forEach(seat => {
+          if (seat.profileImageUrl) {
+            console.log(`[SeatData] Found seat with profileImageUrl: ${seat.username}, URL: ${seat.profileImageUrl}`);
+          }
+        });
+      });
+      
+      setRooms(data.rooms);
+    } else if (data.error) {
+      console.error('[SeatData] Error in SSE data:', data.error);
+      toast({
+        title: 'データ取得エラー',
+        description: data.error,
+        variant: 'destructive',
+      });
+    }
+  }, []);
+
+  // SSE接続を使用してデータを取得
+  const { 
+    data,
+    connectionState,
+    connect: refreshData
+  } = useSSE<SSEData>({
+    endpoint: '/api/sse',
+    onMessage: handleMessage,
+    onSystemMessage: handleSystemMessage,
+    onConnect: () => {
+      console.log('[SeatData] SSE connection established');
+    },
+    onDisconnect: () => {
+      console.log('[SeatData] SSE connection closed');
+    },
+    onError: (error) => {
+      console.error('[SeatData] SSE connection error:', error);
+    },
+    maxRetries: 5, // 最大再試行回数
+    initialBackoffDelay: 2000, // 初期バックオフ（2秒）
+    maxBackoffDelay: 30000, // 最大バックオフ（30秒）
+  });
+
+  // 接続状態からローディング状態を判断
+  const isLoading = 
+    connectionState === 'connecting' || 
+    connectionState === 'reconnecting' || 
+    (connectionState === 'connected' && !data);
+
+  return {
+    rooms,
+    isLoading,
+    connectionState,
+    refreshData
+  };
+}
+</file>
+
+<file path="lib/mongodb.ts">
+import { MongoClient } from 'mongodb';
+
+if (!process.env.MONGODB_URI) {
+  throw new Error('Please add your Mongo URI to .env.local');
+}
+
+const uri = process.env.MONGODB_URI;
+const options = {};
+
+let client;
+let clientPromise: Promise<MongoClient>;
+
+if (process.env.NODE_ENV === 'development') {
+  // In development mode, use a global variable so that the value
+  // is preserved across module reloads caused by HMR (Hot Module Replacement).
+  let globalWithMongo = global as typeof globalThis & {
+    _mongoClientPromise?: Promise<MongoClient>;
+  };
+
+  if (!globalWithMongo._mongoClientPromise) {
+    client = new MongoClient(uri, options);
+    globalWithMongo._mongoClientPromise = client.connect();
+  }
+  clientPromise = globalWithMongo._mongoClientPromise;
+} else {
+  // In production mode, it's best to not use a global variable.
+  client = new MongoClient(uri, options);
+  clientPromise = client.connect();
+}
+
+export default clientPromise;
+
+export type Room = {
+  _id: string;
+  created_at: Date;
+};
+
+export type Seat = {
+  _id: string;
+  room_id: string;
+  position: number;
+  username: string | null;
+  authorId: string | null;
+  task: string | null;
+  enterTime: Date | null;
+  autoExitScheduled: Date | null;
+  profileImageUrl: string | null;
+  timestamp: Date;
+  created_at: Date;
+};
+</file>
+
+<file path="lib/sseUtils.ts">
+import { Db } from 'mongodb';
+
+/**
+ * MongoDB から部屋と座席のデータを取得し、クライアント用にフォーマットする
+ * @param db MongoDB データベース接続
+ * @returns フォーマットされた部屋と座席のデータ
+ */
+export async function fetchRoomData(db: Db) {
+  console.log('[SSE:Utils] Fetching room data from MongoDB');
+  try {
+    // すべての座席を取得（部屋IDに関わらず）
+    const allSeats = await db.collection('seats').find().toArray();
+    console.log(`[SSE:Utils] Retrieved ${allSeats.length} total seats from database`);
+    
+    // プロフィール画像URLがある座席を探す
+    const seatsWithProfileImage = allSeats.filter(seat => seat.profileImageUrl);
+    if (seatsWithProfileImage.length > 0) {
+      console.log(`[SSE:Utils] Found ${seatsWithProfileImage.length} seats with profile images in database:`);
+      seatsWithProfileImage.forEach(seat => {
+        console.log(`[SSE:Utils] Seat with profile image in DB: ${seat.username}, URL: ${seat.profileImageUrl}, room_id: ${seat.room_id}`);
+      });
+    } else {
+      console.log(`[SSE:Utils] No seats with profile images found in database`);
+    }
+    
+    // すべての部屋を取得
+    const rooms = await db.collection('rooms').find().toArray();
+    console.log(`[SSE:Utils] Retrieved ${rooms.length} rooms`);
+    
+    // 部屋IDごとの座席数を集計
+    const seatsByRoomId = allSeats.reduce((acc, seat) => {
+      const roomId = seat.room_id || 'unassigned';
+      acc[roomId] = (acc[roomId] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    console.log('[SSE:Utils] Seats count by room_id:', seatsByRoomId);
+    
+    // 通常の処理
+    const seats = rooms.length > 0 ? allSeats : allSeats;
+    
+    // 最初の数件の生のシートデータをログに出力（デバッグ用）
+    if (seats.length > 0) {
+      console.log('[SSE:Utils] DEBUG - Raw seats data sample:');
+      seats.slice(0, 3).forEach((seat, index) => {
+        console.log(`Seat ${index}:`, JSON.stringify({
+          _id: seat._id.toString(),
+          username: seat.username,
+          profileImageUrl: seat.profileImageUrl,
+          room_id: seat.room_id,
+          position: seat.position,
+        }, null, 2));
+      });
+    }
+
+    // roomsが空の場合は、シートを直接配列の最初の要素として使用する
+    if (rooms.length === 0) {
+      console.log('[SSE:Utils] No rooms found, creating a default room with all seats');
+      const defaultRoom = {
+        id: 'focus-room',
+        type: 'focus',
+        seats: seats.map(seat => ({
+          id: seat._id.toString(),
+          username: seat.username,
+          task: seat.task,
+          enterTime: seat.enterTime,
+          autoExitScheduled: seat.autoExitScheduled,
+          profileImageUrl: seat.profileImageUrl,
+          timestamp: seat.timestamp
+        }))
+      };
+
+      // 変換後のシートデータサンプルをログに出力
+      console.log('[SSE:Utils] DEBUG - Transformed default room seats sample:');
+      if (defaultRoom.seats.length > 0) {
+        defaultRoom.seats.slice(0, 3).forEach((seat, index) => {
+          console.log(`Transformed Seat ${index}:`, JSON.stringify(seat, null, 2));
+        });
+      }
+      
+      // プロフィール画像URLがある座席をログ出力
+      const transformedSeatsWithImage = defaultRoom.seats.filter(seat => seat.profileImageUrl);
+      if (transformedSeatsWithImage.length > 0) {
+        console.log(`[SSE:Utils] Found ${transformedSeatsWithImage.length} transformed seats with profile images in default room:`);
+        transformedSeatsWithImage.forEach(seat => {
+          console.log(`[SSE:Utils] Transformed seat with profile image: ${seat.username}, URL: ${seat.profileImageUrl}`);
+        });
+      }
+
+      return { rooms: [defaultRoom] };
+    }
+
+    // 部屋ごとに座席をマッピングする詳細ログ
+    console.log('[SSE:Utils] Mapping seats to rooms...');
+    rooms.forEach(room => {
+      const roomSeats = seats.filter(seat => seat.room_id === room._id);
+      console.log(`[SSE:Utils] Room ${room._id}: ${roomSeats.length} seats found`);
+      
+      // この部屋にプロフィール画像付きの座席があるか確認
+      const roomSeatsWithImages = roomSeats.filter(seat => seat.profileImageUrl);
+      if (roomSeatsWithImages.length > 0) {
+        console.log(`[SSE:Utils] Room ${room._id} has ${roomSeatsWithImages.length} seats with profile images`);
+      }
+    });
+
+    const roomsWithSeats = rooms.map(room => {
+      // この部屋の座席を取得
+      const roomSeats = seats
+        .filter(seat => seat.room_id === room._id)
+        .sort((a, b) => a.position - b.position);
+        
+      console.log(`[SSE:Utils] Processing room ${room._id} with ${roomSeats.length} seats`);
+      
+      // プロフィール画像URLがある座席をログ出力
+      const seatsWithImages = roomSeats.filter(seat => seat.profileImageUrl);
+      if (seatsWithImages.length > 0) {
+        console.log(`[SSE:Utils] Room ${room._id} has ${seatsWithImages.length} seats with profile images before transform`);
+      }
+      
+      // 座席データを変換
+      const transformedSeats = roomSeats.map(seat => ({
+        id: seat._id.toString(),
+        username: seat.username,
+        task: seat.task,
+        enterTime: seat.enterTime,
+        autoExitScheduled: seat.autoExitScheduled,
+        profileImageUrl: seat.profileImageUrl,
+        timestamp: seat.timestamp
+      }));
+      
+      // 変換後にプロフィール画像URLがある座席をログ出力
+      const transformedSeatsWithImages = transformedSeats.filter(seat => seat.profileImageUrl);
+      if (transformedSeatsWithImages.length > 0) {
+        console.log(`[SSE:Utils] Room ${room._id} has ${transformedSeatsWithImages.length} seats with profile images after transform`);
+        transformedSeatsWithImages.forEach(seat => {
+          console.log(`[SSE:Utils] Transformed seat with profile image: ${seat.username}, URL: ${seat.profileImageUrl}`);
+        });
+      }
+      
+      return {
+        id: room._id,
+        seats: transformedSeats
+      };
+    });
+
+    // 変換後のデータサンプルをログに出力
+    console.log('[SSE:Utils] DEBUG - Transformed rooms data sample:');
+    if (roomsWithSeats.length > 0 && roomsWithSeats[0].seats.length > 0) {
+      const sampleSeats = roomsWithSeats[0].seats.slice(0, 3);
+      console.log(`Room ${roomsWithSeats[0].id} sample seats:`, 
+        JSON.stringify(sampleSeats, null, 2));
+    }
+
+    console.log('[SSE:Utils] Room data formatted successfully');
+    // プロフィール画像URLの例をログに出力（デバッグ用）
+    if (seats.length > 0 && seats.some(seat => seat.profileImageUrl)) {
+      const exampleSeat = seats.find(seat => seat.profileImageUrl);
+      console.log(`[SSE:Utils] DEBUG - Example profile image URL: ${exampleSeat?.profileImageUrl}`);
+      
+      // JSON形式でログ出力
+      console.log('[SSE:Utils] DEBUG - Seat with profile image:', 
+        JSON.stringify({
+          _id: exampleSeat?._id.toString(),
+          username: exampleSeat?.username,
+          profileImageUrl: exampleSeat?.profileImageUrl,
+          room_id: exampleSeat?.room_id
+        }, null, 2));
+    } else {
+      console.log('[SSE:Utils] DEBUG - No profile image URLs found in seats data');
+    }
+    
+    // 最終的な結果にプロフィール画像URLがある座席があるか確認
+    let totalSeatsWithProfileImages = 0;
+    roomsWithSeats.forEach(room => {
+      const roomSeatsWithImages = room.seats.filter(seat => seat.profileImageUrl);
+      totalSeatsWithProfileImages += roomSeatsWithImages.length;
+    });
+    
+    if (totalSeatsWithProfileImages > 0) {
+      console.log(`[SSE:Utils] Final data has ${totalSeatsWithProfileImages} seats with profile images`);
+    } else {
+      console.log(`[SSE:Utils] Final data has NO seats with profile images`);
+    }
+    
+    return { rooms: roomsWithSeats };
+  } catch (error) {
+    console.error('[SSE:Utils] Error fetching room data:', error);
+    return { rooms: [], error: 'Failed to fetch data' };
+  }
+}
+
+/**
+ * 指数バックオフ付きの再接続試行回数とタイムアウトを計算する
+ * @param retryCount 現在の試行回数
+ * @param baseDelay 基本の待機時間（ミリ秒）
+ * @param maxDelay 最大待機時間（ミリ秒）
+ * @returns 次回待機時間（ミリ秒）
+ */
+export function calculateBackoff(retryCount: number, baseDelay: number = 1000, maxDelay: number = 30000): number {
+  // 指数バックオフ（2のべき乗）とランダム要素（ジッター）を加える
+  const exponentialDelay = Math.min(
+    maxDelay,
+    baseDelay * Math.pow(2, retryCount) * (1 + Math.random() * 0.2)
+  );
+  return Math.round(exponentialDelay);
+}
+
+/**
+ * システムメッセージをクライアントに送信するためのSSEメッセージを生成する
+ * @param message メッセージ内容
+ * @param type メッセージタイプ（info, warning, error など）
+ * @returns フォーマットされたSSEメッセージ
+ */
+export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info'): string {
+  return `event: system-message\ndata: ${JSON.stringify({ message, type, timestamp: new Date().toISOString() })}\n\n`;
+}
+
+/**
+ * MongoDB Change Streamの接続状態を追跡するためのクラス
+ * グローバルな状態を管理し、複数のSSE接続間で自動退室チェックの重複を防ぐ
+ */
+export class ChangeStreamManager {
+  private static instance: ChangeStreamManager;
+  private activeConnections: number = 0;
+
+  private constructor() {}
+
+  public static getInstance(): ChangeStreamManager {
+    if (!ChangeStreamManager.instance) {
+      ChangeStreamManager.instance = new ChangeStreamManager();
+    }
+    return ChangeStreamManager.instance;
+  }
+
+  /**
+   * 新しいSSE接続を登録する
+   * @returns 登録後のアクティブ接続数
+   */
+  public registerConnection(): number {
+    this.activeConnections++;
+    console.log(`[SSE:Manager] New connection registered. Active connections: ${this.activeConnections}`);
+    // 最初の接続が登録されたことを示すフラグを返す
+    return this.activeConnections;
+  }
+
+  /**
+   * SSE接続の終了を登録する
+   * @returns 残りのアクティブ接続数
+   */
+  public unregisterConnection(): number {
+    this.activeConnections = Math.max(0, this.activeConnections - 1);
+    console.log(`[SSE:Manager] Connection unregistered. Active connections: ${this.activeConnections}`);
+    return this.activeConnections;
+  }
+
+  /**
+   * 現在のアクティブな接続数を取得する
+   * @returns アクティブな接続数
+   */
+  public getActiveConnections(): number {
+    return this.activeConnections;
+  }
+
+  /**
+   * このインスタンスで自動退室チェックを開始すべきか判断する
+   * (通常、最初の接続時にtrueを返す)
+   * @returns 開始すべきならtrue
+   */
+  public shouldStartAutoExitCheckOnRegister(): boolean {
+    // activeConnectionsがインクリメントされた直後に呼ばれる想定
+    return this.activeConnections === 1;
+  }
+}
+</file>
+
+<file path="lib/types.ts">
+// クライアント・サーバー共通の型定義
+
+/**
+ * YouTube API の型定義
+ */
+export interface Author {
+  displayName: string;
+  profileImageUrl: string;
+  channelId: string;
+}
+
+export interface MessageSnippet {
+  displayMessage: string;
+  publishedAt: string;
+  authorDisplayName?: string;
+  authorPhotoUrl?: string;
+  authorChannelId?: {
+    value?: string;
+  };
+}
+
+export interface ChatItem {
+  id: string;
+  snippet: MessageSnippet;
+  authorDetails: Author;
+}
+
+export interface ChatResponse {
+  items: ChatItem[];
+  nextPageToken: string;
+  pollingIntervalMillis: number;
+}
+
+/**
+ * 自動退室状態の型定義
+ */
+export interface AutoExitStatus {
+  isScheduled: boolean;
+  scheduledTime: Date | null;
+  remainingTime: number | null; // ミリ秒単位
+  formattedTime: string | null; // 表示用フォーマット
+}
+
+/**
+ * 座席の型定義
+ */
+export interface Seat {
+  id: string;
+  room_id: string;
+  position: number;
+  username: string | null;
+  authorId?: string | null;
+  task?: string | null;
+  enterTime?: Date | string | null;
+  autoExitScheduled?: Date | string | null;
+  profileImageUrl?: string | null;
+  timestamp: Date | string;
+}
+
+/**
+ * ユーザーカード用の型定義（クライアント側で使用）
+ */
+export interface UserCardData {
+  id: string;
+  name: string;
+  avatar?: string;
+  task?: string | null;
+  autoExitScheduled?: Date | string | null;
+  enterTime?: Date | string | null;
+}
+
+/**
+ * コマンド実行結果の型定義
+ */
+export interface CommandResult {
+  success: boolean;
+  action?: 'enter' | 'exit' | 'update' | 'none' | 'create';
+  seat?: {
+    roomId: string;
+    position: number;
+    username?: string | null;
+    previousUsername?: string;
+    task?: string | null;
+    id?: string;
+  };
+  message?: string;
+  error?: string;
+}
+
+/**
+ * YouTube API エラーの型定義
+ */
+export class YouTubeAPIError extends Error {
+  status?: number;
+  code?: string;
+  
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = 'YouTubeAPIError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * コマンドの型定義
+ */
+export interface Command {
+  command: string;
+  taskName?: string;
+  authorName: string;
+  authorId: string;
+  commentId: string;
+  commentText: string;
+  profileImageUrl?: string;
+}
+
+/**
+ * 自動退室機能の処理結果
+ */
+export interface AutoExitProcessResult {
+  processedCount: number;
+  details: Array<{
+    username: string | null;
+    roomId: string;
+    position: number;
+    success: boolean;
+    error?: string;
+  }>;
+}
+</file>
+
+<file path="scripts/test-mongodb.ts">
+// MongoDB接続テスト用スクリプト
+import { MongoClient } from 'mongodb';
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+
+// .env.localを読み込み
+dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
+
+async function testMongoDBConnection() {
+  if (!process.env.MONGODB_URI) {
+    console.error('環境変数MONGODB_URIが設定されていません');
+    process.exit(1);
+  }
+
+  const client = new MongoClient(process.env.MONGODB_URI);
+
+  try {
+    console.log('MongoDB接続テストを開始します...');
+    
+    // データベースに接続
+    await client.connect();
+    console.log('MongoDB接続成功！');
+    
+    // データベース情報を表示
+    const db = client.db('coworking');
+    const collections = await db.listCollections().toArray();
+    
+    console.log('データベース: coworking');
+    console.log('コレクション一覧:');
+    collections.forEach((collection, index) => {
+      console.log(`${index + 1}. ${collection.name}`);
+    });
+    
+    // roomsコレクションのデータ取得
+    const rooms = await db.collection('rooms').find().toArray();
+    console.log('\nルーム数:', rooms.length);
+    console.log('ルーム一覧:', rooms.map(room => room._id));
+    
+    // seatsコレクションのデータ取得
+    const seats = await db.collection('seats').find().toArray();
+    console.log('\n座席数:', seats.length);
+    console.log('最初の座席データ例:', JSON.stringify(seats[0] || 'データなし', null, 2));
+
+    // 座席数とユーザー数を確認
+    const userSeats = await db.collection('seats').find({ username: { $ne: null } }).toArray();
+    console.log('\n現在利用中の座席数:', userSeats.length);
+    if (userSeats.length > 0) {
+      console.log('入室中のユーザー一覧:');
+      userSeats.forEach((seat, index) => {
+        const enterTime = seat.enterTime ? new Date(seat.enterTime).toLocaleString() : '不明';
+        const exitTime = seat.autoExitScheduled ? new Date(seat.autoExitScheduled).toLocaleString() : '不明';
+        console.log(`${index + 1}. ${seat.username} - 部屋: ${seat.room_id}, 座席: ${seat.position}, 入室: ${enterTime}, 自動退室: ${exitTime}`);
+      });
+    }
+
+    console.log('\nMongoDBテスト完了');
+  } catch (error) {
+    console.error('MongoDB接続エラー:', error);
+  } finally {
+    await client.close();
+  }
+}
+
+// スクリプト実行
+testMongoDBConnection();
+</file>
+
+<file path=".eslintrc.json">
+{
+  "extends": [
+    "next/core-web-vitals",
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended",
+    "prettier"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "plugins": ["@typescript-eslint", "react", "react-hooks"],
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react/prop-types": "off",
+    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-console": ["warn", { "allow": ["warn", "error"] }]
+  }
+}
+</file>
+
+<file path="refactoring-tasks.md">
+# リファクタリングタスクリスト
+
+**現在の作業フェーズ:** フェーズ1 - コアロジックの整理と責務分離
+
+## フェーズ0 - 基盤整備（完了）
+
+- [x] Jest / React Testing Libraryの統合
+- [x] 基本的なテストカバレッジレポートの設定
+- [x] ESLint / Prettierルールの統一とCIでのチェック
+- [x] `lib/youtube.js` → `lib/youtube.ts` への完全な移行
+- [x] 不要な`.js`ファイルの削除
+- [x] `scripts`内の`.js`ファイルを可能な範囲で`.ts`に移行
+- [x] `package.json`の不要な依存関係をレビュー（問題なしを確認）
+- [x] 依存関係バージョンの更新検討（大きな問題なしを確認）
+
+## フェーズ1 - コアロジックの整理と責務分離
+
+- [x] Zustandによる状態管理導入
+  - [x] Pomodoroタイマーロジックのリファクタリング
+
+- [x] YouTube関連の責務分離
+  - [x] コメント処理とコマンド実行の分離
+  - [x] APIエンドポイントの再設計
+  - [x] エラーハンドリングの強化
+
+- [x] SSE（Server-Sent Events）通信の改善
+  - [x] 複数コネクション対応の改善
+  - [x] エラーハンドリングの強化
+  - [x] 再接続ロジックの実装
+  - [x] 接続断からの回復機能の実装
+  - [x] クライアント側の再接続処理の改善
+
+- [x] 自動退室ロジックの整理
+  - [x] バックエンドのロジックをライブラリに集約
+  - [x] フロントエンドの表示ロジックを分離
+
+## フェーズ2 - プレゼンテーション層の整理
+
+- [ ] コンポーネントの責務分離
+  - [ ] 表示関連コンポーネントの分割
+  - [ ] ロジック部分とUIの分離
+  - [ ] Propsの型定義強化
+
+- [ ] シャドーCNとTailwindの最適化
+  - [ ] スタイルシステムの統一
+  - [ ] コンポーネント間の一貫性確保
+
+- [ ] アクセシビリティの改善
+  - [ ] ARIA属性の適切な利用
+  - [ ] キーボードナビゲーションの改善
+
+## フェーズ3 - パフォーマンス最適化
+
+- [ ] レンダリングパフォーマンスの最適化
+  - [ ] 不要なレンダリングの削減
+  - [ ] メモ化による最適化の検討
+
+- [ ] バンドルサイズの最適化
+  - [ ] 使用していないコードの削除
+  - [ ] 重複コードの統合
+  - [ ] コードスプリッティングの検討
+
+- [ ] API通信の最適化
+  - [ ] データフェッチングの統合
+  - [ ] キャッシュ戦略の実装
+
+## フェーズ 4: テストカバレッジ向上
+
+### ユニットテスト
+- [ ] `lib/utils.ts` 内のヘルパー関数のユニットテストを作成・拡充
+- [ ] `lib/messages.ts` のテンプレート生成関数のユニットテストを作成
+- [ ] `UserCard`, `PomodoroTimer` など主要コンポーネントの表示ロジックに関するユニットテストを作成
+
+### インテグレーションテスト
+- [ ] APIエンドポイントのテスト環境（Mock Service Worker or Supertest）をセットアップ
+- [ ] コマンド処理APIのインテグレーションテストを作成
+- [ ] SSE接続とデータフローに関するインテグレーションテストを作成
+- [ ] DB操作を含むシナリオのインテグレーションテストを作成
+- [ ] フロントエンドとバックエンドを連携させたテストシナリオ（コマンド送信 → UI更新など）を作成
+
+### E2Eテスト (オプション)
+- [ ] PlaywrightなどのE2Eテストフレームワークを導入
+- [ ] 主要ユーザーフロー（入室、退室、自動退室）のE2Eテストを作成
+
+## フェーズ 5: ドキュメントとクリーンアップ
+
+### ドキュメント更新
+- [ ] `docs/` 内のドキュメント（特に `refactoring-strategy.md` や関連文書）をリファクタリング内容に合わせて更新
+- [ ] コード内のコメント（JSDoc/TSDoc）を充実させる (特にAPI、複雑なロジック)
+
+### コードクリーンアップ
+- [ ] 未使用の変数、関数、インポート、コンポーネントを特定し削除
+- [ ] `console.log` 等のデバッグコードを削除または適切なロガーに置き換え
+- [ ] `.env.example` ファイルを作成・更新し、必要な環境変数を明記
+</file>
+
 <file path="app/api/sse/route.ts">
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
@@ -10217,6 +10825,11 @@ interface ChatItem {
   snippet?: {
     displayMessage?: string;
     publishedAt?: string;
+    authorDisplayName?: string;
+    authorPhotoUrl?: string;
+    authorChannelId?: {
+      value?: string;
+    };
   };
   authorDetails?: {
     displayName?: string;
@@ -10274,8 +10887,11 @@ export async function GET() {
     for (const item of chatData.items || []) {
       const commentId = item.id;
       const commentText = item.snippet?.displayMessage || '';
-      const authorName = item.authorDetails?.displayName;
-      const authorId = item.authorDetails?.channelId;
+      
+      // API構造に応じて投稿者情報を取得（snippetとauthorDetailsの両方をチェック）
+      const authorName = item.snippet?.authorDisplayName || item.authorDetails?.displayName;
+      const authorId = (item.snippet?.authorChannelId?.value) || item.authorDetails?.channelId;
+      const profileImageUrl = item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl;
       
       // 以下の条件でコメント処理をスキップ
       // 1. 投稿者情報がない
@@ -10294,6 +10910,7 @@ export async function GET() {
       }
       
       console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
+      console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`);
       
       // コマンド検出
       const { command, taskName } = detectCommand(commentText);
@@ -10307,7 +10924,7 @@ export async function GET() {
           authorId,
           commentId,
           commentText,
-          profileImageUrl: item.authorDetails?.profileImageUrl
+          profileImageUrl
         });
         
         console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
@@ -10328,8 +10945,8 @@ export async function GET() {
     // コメントデータを整形 (UI表示用)
     const comments = chatData.items?.map((item: ChatItem) => ({
       id: item.id,
-      author: item.authorDetails?.displayName || '不明なユーザー',
-      profileImageUrl: item.authorDetails?.profileImageUrl,
+      author: item.snippet?.authorDisplayName || item.authorDetails?.displayName || '不明なユーザー',
+      profileImageUrl: item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl,
       text: item.snippet?.displayMessage || '',
       publishedAt: item.snippet?.publishedAt
     })) || [];
@@ -10512,6 +11129,13 @@ export default function Home() {
       try {
         console.log(`コマンド処理: ${command.command} by ${command.authorName}`);
         
+        // プロフィール画像URLがあるかログ出力
+        if (command.profileImageUrl) {
+          console.log(`[Page] Command has profile image URL: ${command.profileImageUrl}`);
+        } else {
+          console.log(`[Page] Command has no profile image URL`);
+        }
+        
         // コマンド実行APIをコール
         const response = await fetch('/api/commands', {
           method: 'POST',
@@ -10523,7 +11147,8 @@ export default function Home() {
             username: command.authorName,
             authorId: command.authorId,
             videoId: command.commentId.split('_')[0], // コメントIDからビデオID部分を抽出
-            taskName: command.taskName
+            taskName: command.taskName,
+            profileImageUrl: command.profileImageUrl // プロフィール画像URLを追加
           }),
         });
         
@@ -10535,6 +11160,21 @@ export default function Home() {
         
         if (result.success) {
           console.log(`コマンド ${command.command} の処理成功:`, result);
+          
+          // デバッグ: データベース更新の確認
+          try {
+            console.log(`[Page] Checking database for updates after command ${command.command}...`);
+            const dbCheckResponse = await fetch('/api/debug/check-db?command=' + command.command + 
+              '&username=' + encodeURIComponent(command.authorName) + 
+              (command.profileImageUrl ? '&profileImageUrl=' + encodeURIComponent(command.profileImageUrl) : ''));
+            
+            if (dbCheckResponse.ok) {
+              const dbCheckResult = await dbCheckResponse.json();
+              console.log(`[Page] Database check result:`, dbCheckResult);
+            }
+          } catch (checkError) {
+            console.warn(`[Page] Error checking database:`, checkError);
+          }
           
           // 成功時に通知表示
           if (command.command === 'work') {
@@ -10863,7 +11503,7 @@ export default function Header() {
             >
               {currentMode.name}
             </Badge>
-            <span className="text-sm font-medium">{formattedTimeLeft}</span>
+            <span className="text-sm font-medium">{mounted ? formattedTimeLeft : "--:--"}</span>
           </div>
           
           {/* 現在時刻表示 */}
@@ -10871,159 +11511,12 @@ export default function Header() {
             <Clock className="h-4 w-4 text-muted-foreground" />
             <span className="font-medium">{timeString}</span>
             <span className="hidden md:inline text-xs text-muted-foreground">
-              {dateString}
+              {mounted ? dateString : "--/--/--"}
             </span>
           </div>
         </div>
       </div>
     </header>
-  );
-}
-</file>
-
-<file path="components/PomodoroTimer.tsx">
-"use client";
-
-import { Play, Pause, RefreshCw, Coffee, TimerIcon, Brain } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { 
-  Card, 
-  CardContent,
-  CardFooter
-} from "@/components/ui/card";
-import { 
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { Badge } from "@/components/ui/badge";
-import { usePomodoro } from "@/hooks/use-pomodoro";
-import { POMODORO_MODES, TimerMode } from "@/lib/store";
-
-export default function PomodoroTimer() {
-  const {
-    mode,
-    formattedTimeLeft,
-    isActive,
-    progress,
-    workSessionsCompleted,
-    currentMode,
-    startTimer,
-    pauseTimer,
-    resetTimer,
-    switchMode
-  } = usePomodoro();
-
-  return (
-    <Card className="w-full max-w-sm mx-auto">
-      <CardContent className="pt-6">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center gap-2">
-            <TimerIcon className="h-5 w-5 text-amber-500" />
-            <h3 className="text-lg font-medium">ポモドーロタイマー</h3>
-          </div>
-          
-          <Badge 
-            variant="outline" 
-            className={`${currentMode.color} text-white`}
-          >
-            {currentMode.name}
-          </Badge>
-        </div>
-        
-        <div className="text-center my-8">
-          <div className="text-4xl font-bold tracking-tighter">
-            {formattedTimeLeft}
-          </div>
-        </div>
-        
-        <Progress 
-          value={progress} 
-          className={`h-2 ${currentMode.color}`} 
-        />
-        
-        <div className="flex justify-between mt-2 text-xs text-muted-foreground">
-          <span>0:00</span>
-          <span>
-            {mode === 'WORK' ? '25:00' : mode === 'BREAK' ? '5:00' : '15:00'}
-          </span>
-        </div>
-
-        <div className="flex justify-center gap-2 mt-6">
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => switchMode('WORK')}
-                  className={`rounded-full ${mode === 'WORK' ? 'border-amber-500 border-2' : ''}`}
-                >
-                  <Brain className="h-4 w-4 text-amber-500" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>作業モード (25分)</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => switchMode('BREAK')}
-                  className={`rounded-full ${mode === 'BREAK' ? 'border-green-500 border-2' : ''}`}
-                >
-                  <Coffee className="h-4 w-4 text-green-500" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>休憩モード (5分)</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </div>
-      </CardContent>
-      
-      <CardFooter className="flex justify-between pt-0">
-        <div className="text-sm text-muted-foreground">
-          作業完了: <span className="font-medium">{workSessionsCompleted}回</span>
-        </div>
-        
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={resetTimer}
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-          
-          {isActive ? (
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={pauseTimer}
-            >
-              <Pause className="h-4 w-4" />
-            </Button>
-          ) : (
-            <Button
-              variant="default"
-              size="icon"
-              onClick={startTimer}
-            >
-              <Play className="h-4 w-4" />
-            </Button>
-          )}
-        </div>
-      </CardFooter>
-    </Card>
   );
 }
 </file>
@@ -11050,13 +11543,24 @@ interface UserCardProps {
 }
 
 export default function UserCard({ user, roomId, position }: UserCardProps) {
+  // デバッグ用ログ出力
+  console.log(`[UserCard] Rendering user: ${user.name}, profileImageUrl:`, user.profileImageUrl);
+  
   // Hydration Errorを防ぐためにクライアントサイドでのみ計算する
   const [mounted, setMounted] = useState(false);
   const [displayTime, setDisplayTime] = useState<string>("0分");
   const [timeStyle, setTimeStyle] = useState<string>("text-blue-400");
+  const [imageError, setImageError] = useState(false);
   
   useEffect(() => {
     setMounted(true);
+    setImageError(false);
+    
+    // デバッグ: コンポーネントマウント時のプロパティを出力
+    console.log(`[UserCard] useEffect - User ${user.name}:`, {
+      profileImageUrl: user.profileImageUrl,
+      validUrl: user.profileImageUrl && typeof user.profileImageUrl === 'string' && user.profileImageUrl.startsWith('http')
+    });
     
     // 経過時間を更新する関数
     const updateElapsedTime = () => {
@@ -11076,19 +11580,34 @@ export default function UserCard({ user, roomId, position }: UserCardProps) {
     
     // コンポーネントのアンマウント時にタイマーをクリア
     return () => clearInterval(intervalId);
-  }, [user.enterTime]); // user.enterTimeが変更されたときに再実行
+  }, [user.enterTime, user.profileImageUrl, user.name]); // profileImageUrlが変更されたときもリセット
+  
+  // プロフィール画像URLが有効かチェック (必ずhttpで始まるURLであることを確認)
+  const validProfileUrl = user.profileImageUrl && 
+    typeof user.profileImageUrl === 'string' && 
+    user.profileImageUrl.startsWith('http');
+  
+  // 有効なプロフィール画像URLかつエラーが発生していない場合
+  const hasValidProfileImage = validProfileUrl && !imageError;
+  
+  const handleImageError = () => {
+    console.log('[UserCard] プロフィール画像の読み込みに失敗:', user.profileImageUrl);
+    setImageError(true);
+  };
   
   return (
     <div className="bg-white rounded-lg p-3 flex flex-col shadow-sm">
       <div className="flex items-center gap-2 mb-1">
-        {user.profileImageUrl ? (
-          <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0">
+        {hasValidProfileImage ? (
+          <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-gray-100">
             <Image 
-              src={user.profileImageUrl} 
+              src={user.profileImageUrl as string} 
               alt={user.name} 
               width={32} 
               height={32}
               className="w-full h-full object-cover"
+              onError={handleImageError}
+              unoptimized // 画像最適化を無効化
             />
           </div>
         ) : (
@@ -11147,6 +11666,11 @@ export interface Author {
 export interface MessageSnippet {
   displayMessage: string;
   publishedAt: string;
+  authorDisplayName?: string;
+  authorPhotoUrl?: string;
+  authorChannelId?: {
+    value?: string;
+  };
 }
 
 export interface ChatItem {
@@ -11272,11 +11796,27 @@ export async function sendChatMessage(liveChatId: string, message: string) {
  */
 export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
   try {
+    // API呼び出しでsnippetとauthorDetailsの両方を取得
     const response = await youtubeWithApiKey.liveChatMessages.list({
       part: ['snippet', 'authorDetails'],
       liveChatId,
       pageToken: pageToken || undefined,
+      maxResults: 100
     });
+    
+    console.log(`[YouTube API] コメント取得: ${response.data.items?.length || 0}件`);
+    
+    // デバッグのため最初のコメントの構造を出力
+    if (response.data.items && response.data.items.length > 0) {
+      const firstItem = response.data.items[0];
+      console.log('[YouTube API] コメント構造サンプル:', 
+        JSON.stringify({
+          id: firstItem.id,
+          snippet: firstItem.snippet,
+          authorDetails: firstItem.authorDetails
+        }, null, 2).substring(0, 500) + '...');
+    }
+    
     return response.data as ChatResponse;
   } catch (error: any) {
     console.error('Error getting live chat messages:', error?.response?.data || error);
@@ -11293,6 +11833,11 @@ export async function getLiveChatMessages(liveChatId: string, pageToken: string 
  * メモリ内キャッシュとして機能（サーバー再起動でリセット）
  */
 export const liveChatIdCache: Record<string, string> = {};
+
+// プロフィール画像URLを検証する関数
+function isValidImageUrl(url?: string | null): boolean {
+  return Boolean(url && typeof url === 'string' && url.startsWith('http'));
+}
 
 /**
  * YouTubeコメントを処理してコマンドとして実行する
@@ -11363,6 +11908,27 @@ export async function processCommand(
   profileImageUrl?: string
 ) {
   console.log(`[Command] Processing command: ${command} from ${username}`);
+  
+  // より詳細なデバッグ情報を出力
+  console.log(`[Command] DEBUG - Command details:`, {
+    command,
+    username,
+    authorId: authorId || 'not provided',
+    taskName: taskName || 'not provided',
+    profileImageUrl: profileImageUrl || 'not provided',
+    hasValidProfileImage: isValidImageUrl(profileImageUrl)
+  });
+  
+  // プロフィール画像URLをログに記録、検証
+  if (profileImageUrl) {
+    if (isValidImageUrl(profileImageUrl)) {
+      console.log(`[Command] Valid profile image URL received: ${profileImageUrl}`);
+    } else {
+      console.warn(`[Command] Invalid profile image URL received: ${profileImageUrl}`);
+      profileImageUrl = undefined; // 無効なURLはundefinedに設定
+    }
+  }
+  
   const seatsCollection = db.collection('seats');
   const notificationsCollection = db.collection('notifications');
   
@@ -11414,19 +11980,43 @@ export async function processCommand(
     
     if (existingSeat) {
       // 既に入室済みの場合：タスクと時間を更新
-      await seatsCollection.updateOne(
+      const updateData: Record<string, any> = { 
+        task: taskName, 
+        enterTime: enterTime, 
+        username: username, // 名前が変わっている可能性も考慮
+        authorId: authorId, // IDも更新（指定されている場合）
+        timestamp: new Date()
+      };
+      
+      // 有効なプロフィール画像URLが提供された場合のみ更新
+      if (isValidImageUrl(profileImageUrl)) {
+        updateData.profileImageUrl = profileImageUrl;
+        console.log(`[Command] Adding profile image URL to update data: ${profileImageUrl}`);
+      } else {
+        console.log(`[Command] No valid profile image URL to add to update data`);
+      }
+      
+      console.log(`[Command] Updating existing seat for ${username}:`, updateData);
+      
+      const updateResult = await seatsCollection.updateOne(
         { _id: existingSeat._id },
-        { 
-          $set: { 
-            task: taskName, 
-            enterTime: enterTime, 
-            username: username, // 名前が変わっている可能性も考慮
-            authorId: authorId, // IDも更新（指定されている場合）
-            profileImageUrl: profileImageUrl, // プロフィール画像も更新
-            timestamp: new Date()
-          } 
-        }
+        { $set: updateData }
       );
+      
+      console.log(`[Command] Seat update result:`, {
+        matchedCount: updateResult.matchedCount,
+        modifiedCount: updateResult.modifiedCount,
+        upsertedCount: updateResult.upsertedCount
+      });
+      
+      // 更新後の座席データを取得して確認
+      const updatedSeat = await seatsCollection.findOne({ _id: existingSeat._id });
+      console.log(`[Command] Seat after update:`, {
+        id: updatedSeat?._id.toString(),
+        username: updatedSeat?.username,
+        profileImageUrl: updatedSeat?.profileImageUrl,
+        hasProfileImage: !!updatedSeat?.profileImageUrl
+      });
       
       // 自動退室時間を設定
       await scheduleAutoExit(db, existingSeat.room_id, existingSeat.position, 2);
@@ -11458,22 +12048,40 @@ export async function processCommand(
       };
     } else {
       // 新規入室の場合：空いている座席を探す
+      const setData: Record<string, any> = {
+        username: username,
+        authorId: authorId, // IDが指定されている場合は保存
+        task: taskName,
+        enterTime: enterTime,
+        timestamp: new Date()
+      };
+      
+      // 有効なプロフィール画像URLが提供された場合のみ設定
+      if (isValidImageUrl(profileImageUrl)) {
+        setData.profileImageUrl = profileImageUrl;
+        console.log(`[Command] Adding profile image URL to new seat data: ${profileImageUrl}`);
+      } else {
+        console.log(`[Command] No valid profile image URL to add to new seat data`);
+      }
+      
+      console.log(`[Command] Looking for an available seat with data:`, setData);
+      
       const availableSeat = await seatsCollection.findOneAndUpdate(
         { username: null }, // 空席を探す
-        { 
-          $set: {
-            username: username,
-            authorId: authorId, // IDが指定されている場合は保存
-            task: taskName,
-            enterTime: enterTime,
-            profileImageUrl: profileImageUrl, // プロフィール画像を保存
-            timestamp: new Date()
-          }
-        },
+        { $set: setData },
         { sort: { position: 1 }, returnDocument: 'after' } // position昇順で最初の空席を取得
       );
       
       if (availableSeat.value) {
+        console.log(`[Command] Found and updated available seat:`, {
+          id: availableSeat.value._id.toString(),
+          username: availableSeat.value.username,
+          profileImageUrl: availableSeat.value.profileImageUrl,
+          hasProfileImage: !!availableSeat.value.profileImageUrl,
+          room_id: availableSeat.value.room_id,
+          position: availableSeat.value.position
+        });
+        
         // 自動退室時間を設定
         await scheduleAutoExit(db, availableSeat.value.room_id, availableSeat.value.position, 2);
         
@@ -11515,18 +12123,41 @@ export async function processCommand(
         const newRoomId = lastRoomSeat.length > 0 ? lastRoomSeat[0].room_id : 1;
         
         // 新しい座席を作成
-        const newSeat = {
+        const newSeat: Record<string, any> = {
           position: newPosition,
           room_id: newRoomId,
           username: username,
           authorId: authorId,
           task: taskName,
           enterTime: enterTime,
-          profileImageUrl: profileImageUrl, // プロフィール画像を保存
           timestamp: new Date()
         };
         
+        // 有効なプロフィール画像URLが提供された場合のみ設定
+        if (isValidImageUrl(profileImageUrl)) {
+          newSeat.profileImageUrl = profileImageUrl;
+          console.log(`[Command] Adding profile image URL to new created seat: ${profileImageUrl}`);
+        } else {
+          console.log(`[Command] No valid profile image URL to add to newly created seat`);
+        }
+        
+        console.log(`[Command] Creating new seat:`, newSeat);
+        
         const insertResult = await seatsCollection.insertOne(newSeat);
+        
+        console.log(`[Command] New seat created:`, {
+          insertedId: insertResult.insertedId.toString(),
+          acknowledged: insertResult.acknowledged
+        });
+        
+        // 作成した座席のデータを取得して確認
+        const createdSeat = await seatsCollection.findOne({ _id: insertResult.insertedId });
+        console.log(`[Command] Newly created seat data:`, {
+          id: createdSeat?._id.toString(),
+          username: createdSeat?.username,
+          profileImageUrl: createdSeat?.profileImageUrl,
+          hasProfileImage: !!createdSeat?.profileImageUrl
+        });
         
         // 自動退室時間を設定
         await scheduleAutoExit(db, newRoomId, newPosition, 2);
@@ -11634,102 +12265,22 @@ export async function processCommand(
 }
 </file>
 
-<file path="scripts/test-mongodb.ts">
-// MongoDB接続テスト用スクリプト
-import { MongoClient } from 'mongodb';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
-
-// .env.localを読み込み
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
-
-async function testMongoDBConnection() {
-  if (!process.env.MONGODB_URI) {
-    console.error('環境変数MONGODB_URIが設定されていません');
-    process.exit(1);
-  }
-
-  const client = new MongoClient(process.env.MONGODB_URI);
-
-  try {
-    console.log('MongoDB接続テストを開始します...');
-    
-    // データベースに接続
-    await client.connect();
-    console.log('MongoDB接続成功！');
-    
-    // データベース情報を表示
-    const db = client.db('coworking');
-    const collections = await db.listCollections().toArray();
-    
-    console.log('データベース: coworking');
-    console.log('コレクション一覧:');
-    collections.forEach((collection, index) => {
-      console.log(`${index + 1}. ${collection.name}`);
-    });
-    
-    // roomsコレクションのデータ取得
-    const rooms = await db.collection('rooms').find().toArray();
-    console.log('\nルーム数:', rooms.length);
-    console.log('ルーム一覧:', rooms.map(room => room._id));
-    
-    // seatsコレクションのデータ取得
-    const seats = await db.collection('seats').find().toArray();
-    console.log('\n座席数:', seats.length);
-    console.log('最初の座席データ例:', JSON.stringify(seats[0] || 'データなし', null, 2));
-
-    // 座席数とユーザー数を確認
-    const userSeats = await db.collection('seats').find({ username: { $ne: null } }).toArray();
-    console.log('\n現在利用中の座席数:', userSeats.length);
-    if (userSeats.length > 0) {
-      console.log('入室中のユーザー一覧:');
-      userSeats.forEach((seat, index) => {
-        const enterTime = seat.enterTime ? new Date(seat.enterTime).toLocaleString() : '不明';
-        const exitTime = seat.autoExitScheduled ? new Date(seat.autoExitScheduled).toLocaleString() : '不明';
-        console.log(`${index + 1}. ${seat.username} - 部屋: ${seat.room_id}, 座席: ${seat.position}, 入室: ${enterTime}, 自動退室: ${exitTime}`);
-      });
-    }
-
-    console.log('\nMongoDBテスト完了');
-  } catch (error) {
-    console.error('MongoDB接続エラー:', error);
-  } finally {
-    await client.close();
-  }
-}
-
-// スクリプト実行
-testMongoDBConnection();
-</file>
-
-<file path=".eslintrc.json">
-{
-  "extends": [
-    "next/core-web-vitals",
-    "eslint:recommended",
-    "plugin:@typescript-eslint/recommended",
-    "plugin:react/recommended",
-    "plugin:react-hooks/recommended",
-    "prettier"
-  ],
-  "parser": "@typescript-eslint/parser",
-  "plugins": ["@typescript-eslint", "react", "react-hooks"],
-  "rules": {
-    "react/react-in-jsx-scope": "off",
-    "react/prop-types": "off",
-    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
-    "no-console": ["warn", { "allow": ["warn", "error"] }]
-  }
-}
-</file>
-
 <file path="next.config.js">
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  images: { unoptimized: true },
+  images: { 
+    unoptimized: true,
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'yt3.ggpht.com',
+        pathname: '**',
+      },
+    ],
+  },
 };
 
 module.exports = nextConfig;
@@ -11832,103 +12383,6 @@ module.exports = nextConfig;
     "ts-node": "^10.9.2"
   }
 }
-</file>
-
-<file path="refactoring-tasks.md">
-# リファクタリングタスクリスト
-
-**現在の作業フェーズ:** フェーズ1 - コアロジックの整理と責務分離
-
-## フェーズ0 - 基盤整備（完了）
-
-- [x] Jest / React Testing Libraryの統合
-- [x] 基本的なテストカバレッジレポートの設定
-- [x] ESLint / Prettierルールの統一とCIでのチェック
-- [x] `lib/youtube.js` → `lib/youtube.ts` への完全な移行
-- [x] 不要な`.js`ファイルの削除
-- [x] `scripts`内の`.js`ファイルを可能な範囲で`.ts`に移行
-- [x] `package.json`の不要な依存関係をレビュー（問題なしを確認）
-- [x] 依存関係バージョンの更新検討（大きな問題なしを確認）
-
-## フェーズ1 - コアロジックの整理と責務分離
-
-- [x] Zustandによる状態管理導入
-  - [x] Pomodoroタイマーロジックのリファクタリング
-
-- [x] YouTube関連の責務分離
-  - [x] コメント処理とコマンド実行の分離
-  - [x] APIエンドポイントの再設計
-  - [x] エラーハンドリングの強化
-
-- [x] SSE（Server-Sent Events）通信の改善
-  - [x] 複数コネクション対応の改善
-  - [x] エラーハンドリングの強化
-  - [x] 再接続ロジックの実装
-  - [x] 接続断からの回復機能の実装
-  - [x] クライアント側の再接続処理の改善
-
-- [x] 自動退室ロジックの整理
-  - [x] バックエンドのロジックをライブラリに集約
-  - [x] フロントエンドの表示ロジックを分離
-
-## フェーズ2 - プレゼンテーション層の整理
-
-- [ ] コンポーネントの責務分離
-  - [ ] 表示関連コンポーネントの分割
-  - [ ] ロジック部分とUIの分離
-  - [ ] Propsの型定義強化
-
-- [ ] シャドーCNとTailwindの最適化
-  - [ ] スタイルシステムの統一
-  - [ ] コンポーネント間の一貫性確保
-
-- [ ] アクセシビリティの改善
-  - [ ] ARIA属性の適切な利用
-  - [ ] キーボードナビゲーションの改善
-
-## フェーズ3 - パフォーマンス最適化
-
-- [ ] レンダリングパフォーマンスの最適化
-  - [ ] 不要なレンダリングの削減
-  - [ ] メモ化による最適化の検討
-
-- [ ] バンドルサイズの最適化
-  - [ ] 使用していないコードの削除
-  - [ ] 重複コードの統合
-  - [ ] コードスプリッティングの検討
-
-- [ ] API通信の最適化
-  - [ ] データフェッチングの統合
-  - [ ] キャッシュ戦略の実装
-
-## フェーズ 4: テストカバレッジ向上
-
-### ユニットテスト
-- [ ] `lib/utils.ts` 内のヘルパー関数のユニットテストを作成・拡充
-- [ ] `lib/messages.ts` のテンプレート生成関数のユニットテストを作成
-- [ ] `UserCard`, `PomodoroTimer` など主要コンポーネントの表示ロジックに関するユニットテストを作成
-
-### インテグレーションテスト
-- [ ] APIエンドポイントのテスト環境（Mock Service Worker or Supertest）をセットアップ
-- [ ] コマンド処理APIのインテグレーションテストを作成
-- [ ] SSE接続とデータフローに関するインテグレーションテストを作成
-- [ ] DB操作を含むシナリオのインテグレーションテストを作成
-- [ ] フロントエンドとバックエンドを連携させたテストシナリオ（コマンド送信 → UI更新など）を作成
-
-### E2Eテスト (オプション)
-- [ ] PlaywrightなどのE2Eテストフレームワークを導入
-- [ ] 主要ユーザーフロー（入室、退室、自動退室）のE2Eテストを作成
-
-## フェーズ 5: ドキュメントとクリーンアップ
-
-### ドキュメント更新
-- [ ] `docs/` 内のドキュメント（特に `refactoring-strategy.md` や関連文書）をリファクタリング内容に合わせて更新
-- [ ] コード内のコメント（JSDoc/TSDoc）を充実させる (特にAPI、複雑なロジック)
-
-### コードクリーンアップ
-- [ ] 未使用の変数、関数、インポート、コンポーネントを特定し削除
-- [ ] `console.log` 等のデバッグコードを削除または適切なロガーに置き換え
-- [ ] `.env.example` ファイルを作成・更新し、必要な環境変数を明記
 </file>
 
 </files>

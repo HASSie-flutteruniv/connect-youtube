@@ -39,7 +39,8 @@ export default function Home() {
   // 独自のSSE接続を使用
   const [rooms, setRooms] = useState<RoomData[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  
+  const [isMounted, setIsMounted] = useState(false);
+
   // コマンド処理の状態管理
   const [isProcessingCommand, setIsProcessingCommand] = useState(false);
   const processingCommandsRef = useRef<Set<string>>(new Set());
@@ -93,6 +94,7 @@ export default function Home() {
   const {
     connectionState,
     connect: refreshData,
+    disconnect,
   } = useSSE<SSEData>({
     endpoint: '/api/sse',
     onMessage: handleSeatDataMessage, // 座席データ用ハンドラ
@@ -112,7 +114,18 @@ export default function Home() {
   // isLoading状態の計算
   const isLoading = connectionState === 'connecting' || connectionState === 'reconnecting';
   
+  // マウント状態を設定する useEffect
   useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  // データ取得とポーリング用の useEffect (isMounted で制御)
+  useEffect(() => {
+    // isMounted が true になってから実行する
+    if (!isMounted) {
+      return;
+    }
+
     // YouTubeコメント取得のポーリング
     const fetchYoutubeComments = async () => {
       try {
@@ -248,12 +261,25 @@ export default function Home() {
     fetchYoutubeComments();
     
     // 定期的に実行 (10秒ごと)
-    const commentInterval = setInterval(fetchYoutubeComments, 10000);
+    const intervalId = setInterval(fetchYoutubeComments, 10000);
 
-    return () => {
-      clearInterval(commentInterval);
-    };
-  }, []);
+    // クリーンアップ関数
+    return () => clearInterval(intervalId);
+  }, [isMounted, handleSystemMessage]);
+
+  // ★ SSE接続用の useEffect (isMounted で制御)
+  useEffect(() => {
+    if (isMounted) {
+      console.log("[Page] Attempting to connect SSE...");
+      refreshData(); // マウント後に接続開始
+
+      // コンポーネントのアンマウント時に切断
+      return () => {
+        console.log("[Page] Disconnecting SSE...");
+        disconnect();
+      };
+    }
+  }, [isMounted, refreshData, disconnect]);
 
   // フォーカスルームとチャットルームを分離
   const focusRooms = rooms.filter(room => room.type === 'focus');

@@ -209,10 +209,19 @@ export function calculateBackoff(retryCount: number, baseDelay: number = 1000, m
  * システムメッセージをクライアントに送信するためのSSEメッセージを生成する
  * @param message メッセージ内容
  * @param type メッセージタイプ（info, warning, error など）
+ * @param id オプションのメッセージID
  * @returns フォーマットされたSSEメッセージ
  */
-export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info'): string {
-  return `event: system-message\ndata: ${JSON.stringify({ message, type, timestamp: new Date().toISOString() })}\n\n`;
+export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info', id?: string): string {
+  const payload: { message: string; type: string; timestamp: string; id?: string } = {
+    message,
+    type,
+    timestamp: new Date().toISOString(),
+  };
+  if (id) {
+    payload.id = id;
+  }
+  return `event: system-message\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
 /**
