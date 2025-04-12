@@ -8,6 +8,14 @@ import { Db } from 'mongodb';
 export async function fetchRoomData(db: Db) {
   console.log('[SSE:Utils] Fetching room data from MongoDB');
   try {
+    // 接続チェック - pingコマンドで接続状態を確認
+    try {
+      await db.command({ ping: 1 });
+    } catch (pingError) {
+      console.warn('[SSE:Utils] MongoDB connection check failed:', pingError);
+      throw new Error('MongoDB connection not available');
+    }
+
     // すべての座席を取得（部屋IDに関わらず）
     const allSeats = await db.collection('seats').find().toArray();
     console.log(`[SSE:Utils] Retrieved ${allSeats.length} total seats from database`);
@@ -56,10 +64,11 @@ export async function fetchRoomData(db: Db) {
     // roomsが空の場合は、シートを直接配列の最初の要素として使用する
     if (rooms.length === 0) {
       console.log('[SSE:Utils] No rooms found, creating a default room with all seats');
+      // デフォルトの部屋タイプを設定
       const defaultRoom = {
         id: 'focus-room',
         type: 'focus',
-        seats: seats.map(seat => ({
+        seats: seats.filter(seat => seat.username).map(seat => ({
           id: seat._id.toString(),
           username: seat.username,
           task: seat.task,
@@ -69,6 +78,9 @@ export async function fetchRoomData(db: Db) {
           timestamp: seat.timestamp
         }))
       };
+
+      // デフォルトルームに座席がない場合でも空配列を返す（seats.lengthが0でも問題ない）
+      console.log(`[SSE:Utils] Created default room with ${defaultRoom.seats.length} occupied seats`);
 
       // 変換後のシートデータサンプルをログに出力
       console.log('[SSE:Utils] DEBUG - Transformed default room seats sample:');
@@ -231,6 +243,7 @@ export function createSystemMessage(message: string, type: 'info' | 'warning' | 
 export class ChangeStreamManager {
   private static instance: ChangeStreamManager;
   private activeConnections: number = 0;
+  private connectionIds: Set<string> = new Set(); // 接続IDを追跡するためのセット
 
   private constructor() {}
 
@@ -243,23 +256,40 @@ export class ChangeStreamManager {
 
   /**
    * 新しいSSE接続を登録する
-   * @returns 登録後のアクティブ接続数
+   * @returns 登録後の接続ID
    */
-  public registerConnection(): number {
+  public registerConnection(): string {
     this.activeConnections++;
-    console.log(`[SSE:Manager] New connection registered. Active connections: ${this.activeConnections}`);
-    // 最初の接続が登録されたことを示すフラグを返す
+    const connectionId = `conn_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    this.connectionIds.add(connectionId);
+    console.log(`[SSE:Manager] New connection registered. ID: ${connectionId}, Active connections: ${this.activeConnections}, Total tracked: ${this.connectionIds.size}`);
+    return connectionId;
+  }
+
+  /**
+   * 特定のSSE接続の終了を登録する
+   * @param connectionId 接続ID
+   * @returns 残りのアクティブ接続数
+   */
+  public unregisterConnection(connectionId?: string): number {
+    this.activeConnections = Math.max(0, this.activeConnections - 1);
+    
+    if (connectionId && this.connectionIds.has(connectionId)) {
+      this.connectionIds.delete(connectionId);
+      console.log(`[SSE:Manager] Connection ${connectionId} unregistered. Active connections: ${this.activeConnections}, Total tracked: ${this.connectionIds.size}`);
+    } else {
+      console.log(`[SSE:Manager] Unknown connection unregistered. Active connections: ${this.activeConnections}, Total tracked: ${this.connectionIds.size}`);
+    }
+    
     return this.activeConnections;
   }
 
   /**
-   * SSE接続の終了を登録する
-   * @returns 残りのアクティブ接続数
+   * すべての接続情報をログに出力
    */
-  public unregisterConnection(): number {
-    this.activeConnections = Math.max(0, this.activeConnections - 1);
-    console.log(`[SSE:Manager] Connection unregistered. Active connections: ${this.activeConnections}`);
-    return this.activeConnections;
+  public logConnectionStatus(): void {
+    console.log(`[SSE:Manager] Current connection status - Active count: ${this.activeConnections}, Tracked connections: ${this.connectionIds.size}`);
+    console.log(`[SSE:Manager] Connection IDs: ${Array.from(this.connectionIds).join(', ')}`);
   }
 
   /**
@@ -268,6 +298,14 @@ export class ChangeStreamManager {
    */
   public getActiveConnections(): number {
     return this.activeConnections;
+  }
+
+  /**
+   * 追跡中の接続数を取得する
+   * @returns 追跡中の接続数
+   */
+  public getTrackedConnectionsCount(): number {
+    return this.connectionIds.size;
   }
 
   /**

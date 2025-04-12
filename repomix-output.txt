@@ -45,10 +45,13 @@ The content is organized as follows:
 <directory_structure>
 .cursor/
   rules/
+    api-best-practices.mdc
     project-rules.mdc
     refactoring-rules.mdc
 app/
   api/
+    announcements/
+      route.ts
     check-auto-exit/
       route.ts
     commands/
@@ -118,6 +121,7 @@ components/
     toggle-group.tsx
     toggle.tsx
     tooltip.tsx
+  AnnouncementsTicker.tsx
   AutoExitStatus.tsx
   BGMPlayer.tsx
   Console.tsx
@@ -143,7 +147,16 @@ hooks/
   use-seat-data.ts
   use-sse.ts
   use-toast.ts
+  use-youtube-comments.ts
 lib/
+  api/
+    clients/
+      apiClient.ts
+    services/
+      youtubeService.ts
+    sse/
+      sseClient.ts
+      sseTypes.ts
   autoExit.ts
   client-utils.ts
   messages.ts
@@ -153,12 +166,6 @@ lib/
   types.ts
   utils.ts
   youtube.ts
-scripts/
-  create-indexes.ts
-  init-db.ts
-  poll-youtube-chat.ts
-  test-mongodb.ts
-  test-youtube-api.ts
 .eslintrc.json
 .gitignore
 .prettierrc
@@ -176,6 +183,734 @@ tsconfig.json
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path=".cursor/rules/api-best-practices.mdc">
+
+</file>
+
+<file path="app/api/announcements/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+
+// お知らせデータの型（必要であれば拡張）
+interface Announcement {
+  _id: string; // MongoDBが自動生成するID
+  message: string;
+  authorChannelId: string;
+  authorName?: string;
+  profileImageUrl?: string;
+  publishedAt: Date;
+  createdAt: Date;
+}
+
+export async function GET() {
+  try {
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    const announcementsCollection = db.collection<Announcement>('announcements');
+
+    // createdAtで降順ソートし、最新20件を取得
+    const announcements = await announcementsCollection
+      .find()
+      .sort({ createdAt: -1 }) // 最新のものを上に
+      .limit(20)
+      .toArray();
+
+    return NextResponse.json(announcements);
+  } catch (error) {
+    console.error('[Announcements API] お知らせ取得エラー:', error); // エラーログを改善
+    return NextResponse.json({ error: 'お知らせの取得に失敗しました' }, { status: 500 });
+  }
+}
+</file>
+
+<file path="components/AnnouncementsTicker.tsx">
+"use client";
+
+import { useEffect, useState } from 'react';
+import { AlertTriangle, Info } from 'lucide-react';
+import useSWR from 'swr'; // データ取得にSWRを使用 (なければインストール必要: npm install swr)
+import { formatDistanceToNow } from 'date-fns'; // 日付表示用 (なければインストール: npm install date-fns)
+import { ja } from 'date-fns/locale'; // 日本語ロケール
+
+// APIから返されるお知らせデータの型
+interface Announcement {
+  _id: string;
+  message: string;
+  authorName?: string;
+  profileImageUrl?: string;
+  createdAt: string; // APIからは文字列で来る想定
+  publishedAt: string; // APIからは文字列で来る想定
+}
+
+// データ取得用のfetcher関数
+const fetcher = (url: string) => fetch(url).then(res => res.json());
+
+export default function AnnouncementsTicker() {
+  const { data: announcements, error } = useSWR<Announcement[]>('/api/announcements', fetcher, {
+    refreshInterval: 60000 // 60秒ごとに再取得 (適宜調整)
+  });
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  // 5秒ごとにお知らせを切り替え
+  useEffect(() => {
+    if (!announcements || announcements.length === 0) return;
+
+    const intervalId = setInterval(() => {
+      setCurrentIndex((prevIndex) => (prevIndex + 1) % announcements.length);
+    }, 5000); // 切り替え間隔（ミリ秒）
+
+    return () => clearInterval(intervalId);
+  }, [announcements]);
+
+  if (error) {
+    console.error("Error fetching announcements:", error);
+    // エラー時は何も表示しないか、エラーメッセージを表示
+    return (
+        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-3 text-sm flex items-center space-x-2 h-10 overflow-hidden">
+            <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+            <span>運営からのお知らせ取得エラー</span>
+        </div>
+    );
+  }
+
+  if (!announcements) {
+    // ローディング表示（任意）
+    return (
+      <div className="bg-blue-50 border-l-4 border-blue-400 text-blue-700 p-3 text-sm flex items-center space-x-2 h-10 overflow-hidden">
+          <Info className="h-5 w-5 flex-shrink-0 animate-pulse" />
+          <span>お知らせを読み込み中...</span>
+      </div>
+    );
+  }
+
+  if (announcements.length === 0) {
+    // お知らせがない場合の表示
+    return (
+      <div className="bg-gray-100 border-l-4 border-gray-400 text-gray-600 p-3 text-sm flex items-center space-x-2 h-10 overflow-hidden">
+          <Info className="h-5 w-5 flex-shrink-0" />
+          <span>現在、運営からのお知らせはありません。</span>
+      </div>
+    );
+  }
+
+  const currentAnnouncement = announcements[currentIndex];
+
+  // currentAnnouncement が存在しない場合のフォールバック (念のため)
+  if (!currentAnnouncement) {
+    return (
+        <div className="bg-gray-100 border-l-4 border-gray-400 text-gray-600 p-3 text-sm flex items-center space-x-2 h-10 overflow-hidden">
+            <Info className="h-5 w-5 flex-shrink-0" />
+            <span>お知らせの読み込みに問題があります。</span>
+        </div>
+    );
+  }
+
+  // createdAt を Date オブジェクトに変換（エラーハンドリング付き）
+  let timeAgo = '不明';
+  try {
+      const createdAtDate = new Date(currentAnnouncement.createdAt);
+      if (!isNaN(createdAtDate.getTime())) {
+          timeAgo = formatDistanceToNow(createdAtDate, { addSuffix: true, locale: ja });
+      }
+  } catch (e) {
+      console.error("Error parsing announcement date:", e);
+  }
+
+
+  return (
+    // 背景色などを変更して NotificationTicker と区別
+    <div className="bg-yellow-50 border-l-4 border-yellow-400 text-yellow-800 p-3 text-sm flex items-center space-x-2 h-10 overflow-hidden">
+      <Info className="h-5 w-5 flex-shrink-0 text-yellow-500" />
+      {currentAnnouncement.profileImageUrl && (
+          <img src={currentAnnouncement.profileImageUrl} alt={currentAnnouncement.authorName || '運営者'} className="h-6 w-6 rounded-full flex-shrink-0" />
+      )}
+      <span className="font-semibold mr-1">{currentAnnouncement.authorName || '運営'}より ({timeAgo}):</span>
+      <span className="flex-grow truncate">{currentAnnouncement.message}</span>
+    </div>
+  );
+}
+</file>
+
+<file path="hooks/use-youtube-comments.ts">
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { youtubeService } from '@/lib/api/services/youtubeService';
+import { toast } from '@/hooks/use-toast';
+import type { Command } from '@/lib/types';
+
+interface UseYouTubeCommentsOptions {
+  enabled?: boolean;
+  onCommandsDetected?: (commands: Command[]) => Promise<void>;
+}
+
+interface UseYouTubeCommentsResult {
+  isProcessingCommand: boolean;
+  startPolling: () => void;
+  stopPolling: () => void;
+  isPolling: boolean;
+}
+
+/**
+ * YouTubeコメント取得とコマンド処理のためのカスタムフック
+ */
+export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): UseYouTubeCommentsResult {
+  const { enabled = true, onCommandsDetected } = options;
+  
+  const [isProcessingCommand, setIsProcessingCommand] = useState(false);
+  const [isPolling, setIsPolling] = useState(false);
+  
+  const processingCommandsRef = useRef<Set<string>>(new Set());
+  const timeoutIdRef = useRef<NodeJS.Timeout | null>(null);
+  const isPollingRef = useRef(false);
+  
+  // バックオフ状態の管理
+  const backoffStateRef = useRef({
+    isActive: false,
+    endTime: 0,
+    pollingInterval: 10000 // 初期値10秒
+  });
+  
+  /**
+   * YouTubeコメントを取得し、コマンドを処理する
+   */
+  const fetchComments = useCallback(async () => {
+    // バックオフ中であればスキップ
+    const now = Date.now();
+    if (backoffStateRef.current.isActive && now < backoffStateRef.current.endTime) {
+      console.log(`[YouTubeComments] バックオフ中 (残り ${Math.ceil((backoffStateRef.current.endTime - now) / 1000)} 秒)`);
+      return;
+    }
+    
+    try {
+      console.log('[YouTubeComments] コメント取得開始');
+      const response = await youtubeService.getComments();
+      
+      // バックオフ状態の更新（APIからのレスポンスに基づく）
+      if (response.backoff && response.remainingSeconds) {
+        backoffStateRef.current.isActive = true;
+        backoffStateRef.current.endTime = now + (response.remainingSeconds * 1000);
+        console.log(`[YouTubeComments] API制限により${response.remainingSeconds}秒間バックオフ設定`);
+        
+        toast({
+          title: 'YouTube API制限',
+          description: `APIリクエスト制限のため、コメント取得を一時停止します (${Math.ceil(response.remainingSeconds / 60)}分間)`,
+          variant: 'destructive',
+        });
+        
+        return;
+      }
+      
+      // APIからの推奨ポーリング間隔があれば使用
+      if (response.pollingIntervalMillis && response.pollingIntervalMillis > 0) {
+        backoffStateRef.current.pollingInterval = Math.max(5000, response.pollingIntervalMillis);
+        console.log(`[YouTubeComments] ポーリング間隔を ${backoffStateRef.current.pollingInterval / 1000} 秒に調整`);
+      }
+      
+      // バックオフ状態をリセット（成功したため）
+      if (backoffStateRef.current.isActive) {
+        backoffStateRef.current.isActive = false;
+        backoffStateRef.current.endTime = 0;
+        console.log('[YouTubeComments] バックオフ状態を解除');
+      }
+      
+      // コマンドを処理（あれば）
+      if (response.commands && Array.isArray(response.commands) && response.commands.length > 0) {
+        console.log(`[YouTubeComments] ${response.commands.length}件のコマンドを検出`);
+        setIsProcessingCommand(true);
+        
+        if (onCommandsDetected) {
+          await onCommandsDetected(response.commands);
+        }
+        
+        setIsProcessingCommand(false);
+      }
+    } catch (error) {
+      console.error('[YouTubeComments] 取得エラー:', error);
+      
+      toast({
+        title: 'YouTubeコメント取得エラー',
+        description: error instanceof Error ? error.message : '不明なエラーが発生しました',
+        variant: 'destructive',
+      });
+    }
+  }, [onCommandsDetected]);
+  
+  /**
+   * 次回のポーリングをスケジュール
+   */
+  const scheduleNextFetch = useCallback(() => {
+    if (!isPollingRef.current) return;
+    
+    timeoutIdRef.current = setTimeout(() => {
+      fetchComments().finally(() => {
+        if (isPollingRef.current) {
+          scheduleNextFetch();
+        }
+      });
+    }, backoffStateRef.current.pollingInterval);
+  }, [fetchComments]);
+  
+  /**
+   * ポーリングを開始
+   */
+  const startPolling = useCallback(() => {
+    if (isPollingRef.current) return;
+    
+    console.log('[YouTubeComments] ポーリング開始');
+    isPollingRef.current = true;
+    setIsPolling(true);
+    
+    fetchComments().finally(() => {
+      if (isPollingRef.current) {
+        scheduleNextFetch();
+      }
+    });
+  }, [fetchComments, scheduleNextFetch]);
+  
+  /**
+   * ポーリングを停止
+   */
+  const stopPolling = useCallback(() => {
+    console.log('[YouTubeComments] ポーリング停止');
+    isPollingRef.current = false;
+    setIsPolling(false);
+    
+    if (timeoutIdRef.current) {
+      clearTimeout(timeoutIdRef.current);
+      timeoutIdRef.current = null;
+    }
+  }, []);
+  
+  // enabledフラグに基づいてポーリングを制御
+  useEffect(() => {
+    if (enabled) {
+      startPolling();
+    } else {
+      stopPolling();
+    }
+    
+    return () => {
+      stopPolling();
+    };
+  }, [enabled, startPolling, stopPolling]);
+  
+  return { 
+    isProcessingCommand,
+    startPolling, 
+    stopPolling,
+    isPolling
+  };
+}
+</file>
+
+<file path="lib/api/clients/apiClient.ts">
+/**
+ * APIレスポンスの共通型定義
+ */
+export interface ApiResponse<T> {
+  data?: T;
+  error?: string;
+  status: number;
+}
+
+/**
+ * 汎用的なAPIクライアントクラス
+ * 基本的なHTTPリクエスト処理とエラーハンドリングを提供
+ */
+export class ApiClient {
+  private baseUrl: string;
+  
+  constructor(baseUrl: string = '') {
+    this.baseUrl = baseUrl;
+  }
+  
+  /**
+   * GETリクエストを実行
+   * @param endpoint APIエンドポイントパス
+   * @param params URLクエリパラメータ
+   * @returns APIレスポンス
+   */
+  async get<T>(endpoint: string, params?: Record<string, string>): Promise<ApiResponse<T>> {
+    try {
+      const url = new URL(this.baseUrl + endpoint, window.location.origin);
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          url.searchParams.append(key, value);
+        });
+      }
+      
+      const response = await fetch(url.toString());
+      const data = await response.json();
+      
+      return {
+        data: response.ok ? data : undefined,
+        error: !response.ok ? data.error || 'Unknown error' : undefined,
+        status: response.status
+      };
+    } catch (error) {
+      console.error(`[ApiClient] GET request failed: ${endpoint}`, error);
+      return {
+        error: error instanceof Error ? error.message : 'Network error',
+        status: 0
+      };
+    }
+  }
+  
+  /**
+   * POSTリクエストを実行
+   * @param endpoint APIエンドポイントパス
+   * @param body リクエストボディ
+   * @returns APIレスポンス
+   */
+  async post<T, U>(endpoint: string, body: T): Promise<ApiResponse<U>> {
+    try {
+      const response = await fetch(this.baseUrl + endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      
+      const data = await response.json();
+      
+      return {
+        data: response.ok ? data : undefined,
+        error: !response.ok ? data.error || 'Unknown error' : undefined,
+        status: response.status
+      };
+    } catch (error) {
+      console.error(`[ApiClient] POST request failed: ${endpoint}`, error);
+      return {
+        error: error instanceof Error ? error.message : 'Network error',
+        status: 0
+      };
+    }
+  }
+}
+
+// デフォルトのAPIクライアントインスタンス
+export const apiClient = new ApiClient();
+</file>
+
+<file path="lib/api/services/youtubeService.ts">
+import { apiClient } from '../clients/apiClient';
+import type { Command, CommandResult } from '@/lib/types';
+
+/**
+ * YouTubeコメント取得APIからのレスポンス型
+ */
+export interface YouTubeCommentsResponse {
+  commands: Command[];
+  pollingIntervalMillis?: number;
+  error?: string;
+  backoff?: boolean;
+  remainingSeconds?: number;
+}
+
+/**
+ * コマンド実行のリクエスト型
+ */
+export interface CommandRequest {
+  command: string;
+  username: string;
+  authorId?: string;
+  videoId?: string;
+  taskName?: string;
+  profileImageUrl?: string;
+}
+
+/**
+ * コマンド実行APIのレスポンス型
+ */
+export interface CommandResponse {
+  success: boolean;
+  result?: CommandResult;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * YouTube関連のAPI呼び出しを担当するサービスクラス
+ */
+export class YouTubeService {
+  /**
+   * YouTubeのコメントとコマンドを取得
+   * @returns コマンドとポーリング情報
+   */
+  async getComments(): Promise<YouTubeCommentsResponse> {
+    const response = await apiClient.get<YouTubeCommentsResponse>('/api/youtube-comments');
+    
+    if (response.error) {
+      console.error('[YouTubeService] Comments fetch error:', response.error);
+      return { 
+        commands: [], 
+        error: response.error,
+        backoff: response.status === 429  // レート制限時は429
+      };
+    }
+    
+    return response.data || { commands: [] };
+  }
+  
+  /**
+   * コマンドを実行
+   * @param commandData コマンド実行に必要なデータ
+   * @returns コマンド実行結果
+   */
+  async executeCommand(commandData: CommandRequest): Promise<CommandResponse> {
+    const response = await apiClient.post<CommandRequest, CommandResponse>('/api/commands', commandData);
+    
+    if (response.error) {
+      console.error('[YouTubeService] Command execution error:', response.error);
+      return { 
+        success: false, 
+        error: response.error 
+      };
+    }
+    
+    return response.data || { success: false, error: 'No response data' };
+  }
+}
+
+// デフォルトのYouTubeサービスインスタンス
+export const youtubeService = new YouTubeService();
+</file>
+
+<file path="lib/api/sse/sseClient.ts">
+import { SSEConnectionState, SystemMessage } from './sseTypes';
+
+/**
+ * SSEクライアントの設定オプション
+ */
+export interface SSEClientOptions {
+  endpoint: string;
+  onMessage?: (data: any) => void;
+  onSystemMessage?: (message: SystemMessage) => void;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onError?: (error: Event) => void;
+  maxRetries?: number;
+  initialBackoffDelay?: number;
+  maxBackoffDelay?: number;
+}
+
+/**
+ * Server-Sent Events (SSE)のクライアントクラス
+ * 接続管理、再接続ロジック、エラーハンドリングを提供
+ */
+export class SSEClient {
+  private eventSource: EventSource | null = null;
+  private reconnectTimeoutId: NodeJS.Timeout | null = null;
+  private retryCount = 0;
+  private connecting = false;
+  private connectionState: SSEConnectionState = 'disconnected';
+  private options: SSEClientOptions;
+  
+  /**
+   * SSEクライアントを初期化
+   * @param options 設定オプション
+   */
+  constructor(options: SSEClientOptions) {
+    this.options = {
+      maxRetries: 10,
+      initialBackoffDelay: 1000,
+      maxBackoffDelay: 60000,
+      ...options
+    };
+  }
+  
+  /**
+   * 現在の接続状態を取得
+   */
+  get state(): SSEConnectionState {
+    return this.connectionState;
+  }
+  
+  /**
+   * 現在の再試行回数を取得
+   */
+  get currentRetryCount(): number {
+    return this.retryCount;
+  }
+  
+  /**
+   * SSE接続を開始
+   */
+  connect(): void {
+    this.cleanup();
+    this.connecting = true;
+    this.setConnectionState(this.retryCount > 0 ? 'reconnecting' : 'connecting');
+    
+    try {
+      console.log(`[SSEClient] Connecting to ${this.options.endpoint}`);
+      this.eventSource = new EventSource(this.options.endpoint);
+      
+      this.eventSource.onopen = this.handleOpen.bind(this);
+      this.eventSource.onmessage = this.handleMessage.bind(this);
+      this.eventSource.onerror = this.handleError.bind(this);
+      
+      // システムメッセージイベントのハンドラを設定
+      this.eventSource.addEventListener('system-message', this.handleSystemMessage.bind(this));
+    } catch (error) {
+      console.error('[SSEClient] Failed to create EventSource:', error);
+      this.setConnectionState('error');
+    }
+  }
+  
+  /**
+   * SSE接続を切断
+   */
+  disconnect(): void {
+    console.log('[SSEClient] Disconnecting');
+    this.cleanup();
+    this.setConnectionState('disconnected');
+    this.options.onDisconnect?.();
+  }
+  
+  /**
+   * リソースの解放とタイマーのクリーンアップ
+   */
+  private cleanup(): void {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId);
+      this.reconnectTimeoutId = null;
+    }
+  }
+  
+  /**
+   * 接続成功時のハンドラ
+   */
+  private handleOpen(): void {
+    console.log('[SSEClient] Connection established');
+    this.setConnectionState('connected');
+    this.connecting = false;
+    this.retryCount = 0;
+    this.options.onConnect?.();
+  }
+  
+  /**
+   * メッセージ受信時のハンドラ
+   */
+  private handleMessage(event: MessageEvent): void {
+    try {
+      const data = JSON.parse(event.data);
+      this.options.onMessage?.(data);
+    } catch (err) {
+      console.error('[SSEClient] Error parsing SSE data:', err, event.data);
+    }
+  }
+  
+  /**
+   * システムメッセージ受信時のハンドラ
+   */
+  private handleSystemMessage(event: MessageEvent): void {
+    try {
+      const systemMessage = JSON.parse(event.data) as SystemMessage;
+      this.options.onSystemMessage?.(systemMessage);
+      console.log(`[SSEClient] System message received: ${systemMessage.type} - ${systemMessage.message}`);
+    } catch (err) {
+      console.error('[SSEClient] Error parsing system message:', err, event.data);
+    }
+  }
+  
+  /**
+   * エラー発生時のハンドラ
+   */
+  private handleError(event: Event): void {
+    console.error('[SSEClient] Connection error:', event);
+    
+    // 接続が閉じられた場合
+    if (this.eventSource?.readyState === EventSource.CLOSED) {
+      this.setConnectionState('disconnected');
+      this.options.onDisconnect?.();
+      
+      // 最大再試行回数を超えていない場合は再接続を試みる
+      if (this.retryCount < (this.options.maxRetries || 10)) {
+        this.retryCount++;
+        this.connecting = true;
+        
+        const delayMs = this.calculateBackoff(this.retryCount);
+        console.log(`[SSEClient] Will attempt to reconnect in ${delayMs}ms (retry ${this.retryCount}/${this.options.maxRetries})`);
+        
+        this.reconnectTimeoutId = setTimeout(() => {
+          if (this.eventSource?.readyState === EventSource.CLOSED) {
+            this.connect();
+          }
+        }, delayMs);
+      } else {
+        console.error(`[SSEClient] Maximum reconnection attempts (${this.options.maxRetries}) reached`);
+        this.setConnectionState('error');
+      }
+    }
+    
+    this.options.onError?.(event);
+  }
+  
+  /**
+   * 指数バックオフ待機時間を計算
+   * @param retry 再試行回数
+   * @returns 待機時間（ミリ秒）
+   */
+  private calculateBackoff(retry: number): number {
+    const { initialBackoffDelay = 1000, maxBackoffDelay = 60000 } = this.options;
+    
+    // 指数バックオフ + ジッター（ランダム要素）
+    const exponentialDelay = Math.min(
+      maxBackoffDelay,
+      initialBackoffDelay * Math.pow(2, retry) * (1 + Math.random() * 0.2)
+    );
+    
+    return Math.round(exponentialDelay);
+  }
+  
+  /**
+   * 接続状態を更新
+   * @param state 新しい接続状態
+   */
+  private setConnectionState(state: SSEConnectionState): void {
+    if (this.connectionState !== state) {
+      console.log(`[SSEClient] Connection state changed: ${this.connectionState} -> ${state}`);
+      this.connectionState = state;
+    }
+  }
+}
+</file>
+
+<file path="lib/api/sse/sseTypes.ts">
+/**
+ * SSE関連の型定義を集約したファイル
+ */
+import { RoomData } from '@/hooks/use-seat-data';
+
+/**
+ * SSE接続の状態を表す型
+ */
+export type SSEConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
+
+/**
+ * システムメッセージの型
+ */
+export interface SystemMessage {
+  message: string;
+  type: 'info' | 'warning' | 'error';
+  timestamp: string;
+  id?: string;
+}
+
+/**
+ * SSEを通じて送信される座席データの型
+ */
+export interface SSEData {
+  rooms: RoomData[];
+  error?: string;
+}
+</file>
 
 <file path=".cursor/rules/project-rules.mdc">
 ---
@@ -5500,6 +6235,8 @@ export default function Console() {
 <file path="components/NotificationTicker.tsx">
 import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import Image from 'next/image'; // Image コンポーネントをインポート
+import { User } from 'lucide-react'; // User アイコンをインポート
 
 // お知らせデータの型
 export interface Notification {
@@ -5507,6 +6244,7 @@ export interface Notification {
   message: string;
   timestamp: number; // ソートや識別に利用
   type?: 'info' | 'warning' | 'error'; // タイプに応じてスタイル変更も可能
+  profileImageUrl?: string | null; // ユーザーアイコンURL (追加)
 }
 
 interface NotificationTickerProps {
@@ -5582,15 +6320,15 @@ const NotificationTicker: React.FC<NotificationTickerProps> = ({
   // タイプに応じたスタイルを返すヘルパー関数
   const getNotificationStyle = (type?: 'info' | 'warning' | 'error') => {
     switch (type) {
-      case 'error': return 'text-red-300';
-      case 'warning': return 'text-yellow-300';
-      default: return 'text-white';
+      case 'error': return 'text-red-600'; // 濃い色に変更
+      case 'warning': return 'text-yellow-600'; // 濃い色に変更
+      default: return 'text-gray-700'; // デフォルトのテキスト色を変更
     }
   };
 
   return (
     <div
-      className={`fixed top-16 left-0 right-0 bg-gray-800/95 text-white py-2 px-4 z-20 overflow-hidden h-10 flex items-center backdrop-blur-sm shadow-lg ${className}`} // ヘッダーの高さに応じて top を調整
+      className={`bg-[#f2f2f2]/95 text-gray-700 py-2 px-4 overflow-hidden h-10 flex items-center rounded-lg shadow-md ${className}`} // 固定解除し、スタイル調整
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       role="region"
@@ -5603,22 +6341,54 @@ const NotificationTicker: React.FC<NotificationTickerProps> = ({
         <div className="w-full text-center relative h-full flex items-center justify-center">
           {/* AnimatePresenceで切り替えアニメーション */}
           <AnimatePresence initial={false} mode="wait">
-            <motion.span
+            <motion.div // span を div に変更し、内部にアイコンとテキストを配置
               key={currentNotification?.id ?? 'empty'} // key を変更して再レンダリングをトリガー
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.4, ease: "easeInOut" }}
-              className={`text-sm absolute inset-0 flex items-center justify-center truncate px-10 ${getNotificationStyle(currentNotification?.type)}`} // 中央揃え + Truncate
+              className={`absolute inset-0 flex items-center justify-center px-10 ${getNotificationStyle(currentNotification?.type)}`} // 中央揃え
               aria-label={`お知らせ ${currentIndex + 1}/${notifications.length}`}
             >
-              {currentNotification?.message}
-            </motion.span>
+              {/* アイコン表示 */} 
+              <div className="flex-shrink-0 w-5 h-5 mr-2">
+                {currentNotification?.profileImageUrl ? (
+                  <>
+                    <Image
+                      src={currentNotification.profileImageUrl}
+                      alt=""
+                      width={20}
+                      height={20}
+                      className="rounded-full object-cover"
+                      onError={(e) => {
+                        // 画像読み込みエラー時にデフォルトアイコンを表示するためのハンドリング（オプション）
+                        console.warn('Ticker Image Error:', e.currentTarget.src);
+                        // 必要であれば、ここでstateを更新してデフォルトアイコンに切り替える
+                        e.currentTarget.style.display = 'none'; // 画像を隠す
+                        const fallback = e.currentTarget.nextElementSibling; // 次の要素（デフォルトアイコン）を取得
+                        if (fallback) fallback.classList.remove('hidden'); // デフォルトアイコンを表示
+                      }}
+                      unoptimized
+                    />
+                    {/* 画像エラー時のフォールバック用 User アイコン (初期状態は隠す) */}
+                    <User className="w-full h-full text-gray-400 hidden" />
+                  </>
+                ) : (
+                  <User className="w-full h-full text-gray-400" /> // デフォルトアイコン
+                )}
+              </div>
+
+              {/* メッセージ表示 (truncate) */}
+              <span className={`truncate ${getNotificationStyle(currentNotification?.type)}`}>
+                {currentNotification?.message}
+              </span>
+
+            </motion.div>
           </AnimatePresence>
 
           {/* ページネーション表示 (オプション) */}
           {notifications.length > 1 && (
-             <div className="absolute bottom-1 right-2 text-xs opacity-50 select-none">
+             <div className="absolute bottom-1 right-2 text-xs opacity-50 select-none text-gray-500">
                {currentIndex + 1} / {notifications.length}
              </div>
           )}
@@ -7167,28 +7937,10 @@ export const usePomodoro = () => {
 
 <file path="hooks/use-sse.ts">
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { SSEClient, SSEClientOptions } from '@/lib/api/sse/sseClient';
+import { SSEConnectionState, SystemMessage } from '@/lib/api/sse/sseTypes';
 
-export type SSEConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
-
-interface SystemMessage {
-  message: string;
-  type: 'info' | 'warning' | 'error';
-  timestamp: string;
-}
-
-interface SSEHookOptions {
-  endpoint: string;
-  onSystemMessage?: (message: SystemMessage) => void;
-  onMessage?: (data: any) => void;
-  onConnect?: () => void;
-  onDisconnect?: () => void;
-  onError?: (error: Event) => void;
-  maxRetries?: number;
-  initialBackoffDelay?: number;
-  maxBackoffDelay?: number;
-}
-
-interface SSEHookResult<T> {
+interface UseSSEResult<T> {
   data: T | null;
   connectionState: SSEConnectionState;
   lastSystemMessage: SystemMessage | null;
@@ -7202,173 +7954,135 @@ interface SSEHookResult<T> {
  * Server-Sent Events (SSE) のカスタムフック
  * 指数バックオフによる再接続ロジックとエラーハンドリングを実装
  */
-export function useSSE<T = any>(options: SSEHookOptions): SSEHookResult<T> {
-  const {
-    endpoint,
-    onSystemMessage,
-    onMessage,
-    onConnect,
-    onDisconnect,
-    onError,
-    maxRetries = 10,
-    initialBackoffDelay = 1000,
-    maxBackoffDelay = 60000,
-  } = options;
-
+export function useSSE<T = any>(options: SSEClientOptions): UseSSEResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [connectionState, setConnectionState] = useState<SSEConnectionState>('connecting');
   const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
-
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  /**
-   * 指数バックオフの待機時間を計算
-   */
-  const calculateBackoff = useCallback((retry: number) => {
-    // 2のべき乗で待機時間を増やし、最大値でキャップ
-    const exponentialDelay = Math.min(
-      maxBackoffDelay,
-      initialBackoffDelay * Math.pow(2, retry) * (1 + Math.random() * 0.2) // ジッターを加える
-    );
-    return Math.round(exponentialDelay);
-  }, [initialBackoffDelay, maxBackoffDelay]);
-
-  /**
-   * SSE接続を開始
-   */
-  const connect = useCallback(() => {
-    // 既存の接続があれば閉じる
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    // 接続中の状態に更新
-    setConnectionState(isReconnecting ? 'reconnecting' : 'connecting');
-
-    try {
-      const eventSource = new EventSource(endpoint);
-      eventSourceRef.current = eventSource;
-
-      // 接続時のハンドラ
-      eventSource.onopen = () => {
-        console.log('[SSE:Hook] Connection established');
-        setConnectionState('connected');
-        setIsReconnecting(false);
-        setRetryCount(0);
-        onConnect?.();
-      };
-
-      // 通常メッセージのハンドラ
-      eventSource.onmessage = (event) => {
-        try {
-          const parsedData = JSON.parse(event.data);
-          setData(parsedData);
-          onMessage?.(parsedData);
-        } catch (err) {
-          console.error('[SSE:Hook] Error parsing SSE data:', err, event.data);
-        }
-      };
-
-      // システムメッセージのハンドラ
-      eventSource.addEventListener('system-message', (event: MessageEvent) => {
-        try {
-          const systemMessage = JSON.parse(event.data) as SystemMessage;
-          setLastSystemMessage(systemMessage);
-          onSystemMessage?.(systemMessage);
-          
-          console.log(`[SSE:Hook] System message received: ${systemMessage.message} (${systemMessage.type})`);
-        } catch (err) {
-          console.error('[SSE:Hook] Error parsing system message:', err, event.data);
-        }
-      });
-
-      // エラーハンドラ
-      eventSource.onerror = (error) => {
-        console.error('[SSE:Hook] Connection error:', error);
-        
-        // 接続が切れた場合
-        if (eventSource.readyState === EventSource.CLOSED) {
-          setConnectionState('disconnected');
-          onDisconnect?.();
-          
-          // 最大再試行回数を超えていない場合は再接続を試みる
-          if (retryCount < maxRetries) {
-            const nextRetryCount = retryCount + 1;
-            setRetryCount(nextRetryCount);
-            setIsReconnecting(true);
-            
-            const delayMs = calculateBackoff(nextRetryCount);
-            console.log(`[SSE:Hook] Will attempt to reconnect in ${delayMs}ms (retry ${nextRetryCount}/${maxRetries})`);
-            
-            // 指定時間後に再接続
-            reconnectTimeoutRef.current = setTimeout(() => {
-              if (eventSourceRef.current?.readyState === EventSource.CLOSED) {
-                console.log(`[SSE:Hook] Attempting to reconnect (retry ${nextRetryCount}/${maxRetries})`);
-                connect();
-              }
-            }, delayMs);
-          } else {
-            console.error(`[SSE:Hook] Maximum reconnection attempts (${maxRetries}) reached`);
-            setConnectionState('error');
-          }
-        }
-        
-        onError?.(error);
-      };
-    } catch (err) {
-      console.error('[SSE:Hook] Failed to create EventSource:', err);
-      setConnectionState('error');
-    }
-  }, [
-    endpoint, 
-    isReconnecting, 
-    retryCount, 
-    maxRetries, 
-    calculateBackoff, 
-    onConnect, 
-    onMessage, 
-    onSystemMessage,
-    onDisconnect,
-    onError
-  ]);
-
-  /**
-   * SSE接続を閉じる
-   */
-  const disconnect = useCallback(() => {
-    if (eventSourceRef.current) {
-      console.log('[SSE:Hook] Closing connection');
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    setConnectionState('disconnected');
-    onDisconnect?.();
-  }, [onDisconnect]);
-
-  // コンポーネントマウント時にSSE接続を開始
+  
+  const clientRef = useRef<SSEClient | null>(null);
+  // オプションへの安定参照
+  const optionsRef = useRef<SSEClientOptions>(options);
+  const isFirstRenderRef = useRef(true);
+  
+  // オプションの更新
   useEffect(() => {
-    connect();
-
-    // クリーンアップ時に接続を閉じる
+    // 初回レンダリング時はスキップ（マウント時に接続するためのuseEffectに任せる）
+    if (isFirstRenderRef.current) {
+      console.log('[SSE:Hook] First render, skipping options update');
+      isFirstRenderRef.current = false;
+      return;
+    }
+    
+    console.log('[SSE:Hook] Options updated, updating reference');
+    optionsRef.current = options;
+    
+    // オプションが変更された場合は再接続
+    if (clientRef.current && clientRef.current.state === 'connected') {
+      console.log('[SSE:Hook] Options changed while connected, reconnecting');
+      if (clientRef.current) {
+        clientRef.current.disconnect();
+        clientRef.current = null;
+      }
+      
+      // 少し遅延させて再接続
+      setTimeout(() => {
+        if (!clientRef.current) {
+          connect();
+        }
+      }, 100);
+    }
+  }, [options]); // options変更時のみ実行
+  
+  // データメッセージハンドラ
+  const handleMessage = useCallback((newData: T) => {
+    setData(newData);
+    optionsRef.current.onMessage?.(newData);
+  }, []);
+  
+  // システムメッセージハンドラ
+  const handleSystemMessage = useCallback((message: SystemMessage) => {
+    setLastSystemMessage(message);
+    optionsRef.current.onSystemMessage?.(message);
+  }, []);
+  
+  // 接続状態の監視と更新
+  const updateConnectionState = useCallback((state: SSEConnectionState) => {
+    setConnectionState(state);
+    if (state === 'reconnecting') {
+      setIsReconnecting(true);
+    } else if (state === 'connected') {
+      setIsReconnecting(false);
+    }
+  }, []);
+  
+  // 切断メソッド - 先に定義して connect 内で使用できるようにする
+  const disconnect = useCallback(() => {
+    console.log('[SSE:Hook] Disconnecting from SSE endpoint');
+    if (clientRef.current) {
+      clientRef.current.disconnect();
+      clientRef.current = null; // 確実に参照をクリアする
+    }
+  }, []);
+  
+  // 接続メソッド
+  const connect = useCallback(() => {
+    console.log('[SSE:Hook] Connecting to SSE endpoint');
+    
+    // 既存の接続がある場合は切断する
+    if (clientRef.current) {
+      console.log('[SSE:Hook] Existing connection found, disconnecting first');
+      disconnect();
+    }
+    
+    // 新しい接続を作成
+    clientRef.current = new SSEClient({
+      ...optionsRef.current,
+      onMessage: handleMessage,
+      onSystemMessage: handleSystemMessage,
+      onConnect: () => {
+        updateConnectionState('connected');
+        setRetryCount(0);
+        optionsRef.current.onConnect?.();
+      },
+      onDisconnect: () => {
+        updateConnectionState('disconnected');
+        optionsRef.current.onDisconnect?.();
+      },
+      onError: (error) => {
+        // クライアントのエラー状態を確認
+        if (clientRef.current?.state === 'error') {
+          updateConnectionState('error');
+        } else if (clientRef.current?.currentRetryCount) {
+          setRetryCount(clientRef.current.currentRetryCount);
+        }
+        optionsRef.current.onError?.(error);
+      }
+    });
+    
+    clientRef.current.connect();
+  }, [handleMessage, handleSystemMessage, updateConnectionState, disconnect]);
+  
+  // マウント時に接続、アンマウント時に切断
+  useEffect(() => {
+    console.log('[SSE:Hook] Connection effect triggered');
+    let isComponentMounted = true;
+    
+    // 接続を開始
+    if (isComponentMounted) {
+      console.log('[SSE:Hook] Component is mounted, connecting...');
+      connect();
+    }
+    
+    // クリーンアップ関数
     return () => {
+      console.log('[SSE:Hook] Component unmounting, disconnecting...');
+      isComponentMounted = false;
       disconnect();
     };
-  }, [endpoint]);
-
+  }, []); // 空の依存配列 - マウント時のみ実行
+  
   return {
     data,
     connectionState,
@@ -7379,6 +8093,8 @@ export function useSSE<T = any>(options: SSEHookOptions): SSEHookResult<T> {
     retryCount
   };
 }
+
+export { type SSEConnectionState, type SystemMessage };
 </file>
 
 <file path="hooks/use-toast.ts">
@@ -8364,321 +9080,6 @@ export function getElapsedTimeStyle(enterTime: Date | string | null): string {
     return "text-blue-400"; // 1時間未満は青色
   }
 }
-</file>
-
-<file path="scripts/create-indexes.ts">
-import clientPromise from '../lib/mongodb';
-
-async function createIndexes() {
-  try {
-    console.log("Connecting to MongoDB...");
-    const client = await clientPromise;
-    const db = client.db();
-    
-    console.log("Creating indexes for 'seats' collection...");
-    
-    // username フィールドのインデックス作成
-    await db.collection('seats').createIndex(
-      { username: 1 },
-      { background: true, name: "idx_username" }
-    );
-    console.log("Created index for 'username'");
-    
-    // 自動退室チェック用の複合インデックス作成
-    await db.collection('seats').createIndex(
-      { autoExitScheduled: 1, username: 1 },
-      { background: true, name: "idx_auto_exit" }
-    );
-    console.log("Created composite index for 'autoExitScheduled' and 'username'");
-    
-    // authorId フィールドのインデックス作成
-    await db.collection('seats').createIndex(
-      { authorId: 1 },
-      { background: true, name: "idx_author_id" }
-    );
-    console.log("Created index for 'authorId'");
-    
-    // room_id と position の複合インデックス作成
-    await db.collection('seats').createIndex(
-      { room_id: 1, position: 1 },
-      { background: true, unique: true, name: "idx_room_position" }
-    );
-    console.log("Created composite unique index for 'room_id' and 'position'");
-    
-    console.log("All indexes created successfully!");
-    
-    // 既存のインデックス一覧を表示
-    const indexes = await db.collection('seats').indexes();
-    console.log("Current indexes:");
-    console.log(indexes);
-    
-    process.exit(0);
-  } catch (error) {
-    console.error("Error creating indexes:", error);
-    process.exit(1);
-  }
-}
-
-createIndexes();
-</file>
-
-<file path="scripts/init-db.ts">
-import clientPromise from '@/lib/mongodb';
-
-async function initializeDatabase() {
-  try {
-    const client = await clientPromise;
-    const db = client.db('coworking');
-
-    // Create rooms
-    const rooms = ['30', '31'];
-    await Promise.all(rooms.map(async (roomId) => {
-      await db.collection('rooms').updateOne(
-        { _id: roomId },
-        {
-          $setOnInsert: {
-            created_at: new Date()
-          }
-        },
-        { upsert: true }
-      );
-    }));
-
-    // Create seats
-    for (const roomId of rooms) {
-      for (let position = 1; position <= 4; position++) {
-        await db.collection('seats').updateOne(
-          { room_id: roomId, position },
-          {
-            $setOnInsert: {
-              username: null,
-              timestamp: new Date(),
-              created_at: new Date()
-            }
-          },
-          { upsert: true }
-        );
-      }
-    }
-
-    console.log('Database initialized successfully');
-  } catch (error) {
-    console.error('Failed to initialize database:', error);
-    process.exit(1);
-  }
-}
-
-initializeDatabase();
-</file>
-
-<file path="scripts/poll-youtube-chat.ts">
-// YouTubeライブチャットのコメントを定期的にポーリングするスクリプト（TypeScript版）
-
-import dotenv from 'dotenv';
-import { getLiveChatMessages, getLiveChatId } from '../lib/youtube';
-
-// 環境変数を読み込む
-dotenv.config({ path: '.env.local' });
-
-// コメントアイテムの型定義
-interface ChatItem {
-  authorDetails?: {
-    displayName?: string;
-    [key: string]: any;
-  };
-  snippet?: {
-    displayMessage?: string;
-    publishedAt?: string;
-    [key: string]: any;
-  };
-  [key: string]: any;
-}
-
-// チャットデータの型定義
-interface ChatData {
-  items?: ChatItem[];
-  pollingIntervalMillis?: number;
-  nextPageToken?: string;
-  [key: string]: any;
-}
-
-// 検出したコマンドを処理する関数
-function processCommand(author: string, command: string, roomNumber: string): void {
-  console.log(`[コマンド処理] ユーザー「${author}」を部屋「${roomNumber}」に割り当てます。`);
-  // ここで座席管理システムなどと連携する処理を追加
-  // 例: データベースの更新、通知の送信など
-}
-
-// ポーリング処理を行う関数
-async function pollYouTubeChat(): Promise<void> {
-  try {
-    // 環境変数から動画IDを取得
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
-    
-    if (!videoId) {
-      console.error('YOUTUBE_VIDEO_IDが設定されていません。');
-      return;
-    }
-    
-    console.log('YouTubeライブチャットのポーリングを開始します...');
-    console.log(`動画ID: ${videoId}`);
-    
-    // 動画IDからライブチャットIDを取得
-    const liveChatId = await getLiveChatId(videoId);
-    
-    if (!liveChatId) {
-      console.error('ライブチャットIDが取得できませんでした。ライブ配信が終了しているか確認してください。');
-      return;
-    }
-    
-    console.log(`ライブチャットID: ${liveChatId}`);
-    
-    // ポーリングループを開始
-    await pollChatLoop(liveChatId);
-    
-  } catch (error) {
-    console.error('エラーが発生しました:', error);
-  }
-}
-
-// 継続的なポーリングを行うループ関数
-async function pollChatLoop(liveChatId: string, pageToken: string | null = null): Promise<void> {
-  try {
-    // コメントデータを取得
-    const chatData: ChatData = await getLiveChatMessages(liveChatId, pageToken || undefined);
-    
-    // 次回のポーリング間隔
-    const nextPollTime = chatData.pollingIntervalMillis || 5000; // デフォルトは5秒
-    
-    // 次のページトークン
-    const nextPageToken = chatData.nextPageToken;
-    
-    // ステータス表示
-    const timestamp = new Date().toLocaleString('ja-JP');
-    console.log(`\n[${timestamp}] コメント取得成功 (${chatData.items?.length || 0}件)`);
-    
-    // 取得したコメントを処理
-    if (chatData.items && chatData.items.length > 0) {
-      chatData.items.forEach(item => {
-        const author = item.authorDetails?.displayName || '不明なユーザー';
-        const text = item.snippet?.displayMessage || '';
-        const publishTime = new Date(item.snippet?.publishedAt || '').toLocaleString('ja-JP');
-        
-        console.log(`[${publishTime}] ${author}: ${text}`);
-        
-        // コマンド検出 (例: /30)
-        const commandMatch = text.match(/\/(\d+)/);
-        if (commandMatch) {
-          const roomNumber = commandMatch[1];
-          console.log(`    → コマンド「/${roomNumber}」を検出しました！`);
-          
-          // 検出したコマンドを処理
-          processCommand(author, text, roomNumber);
-        }
-      });
-    }
-    
-    // 次回のポーリング時間を表示
-    console.log(`次回のポーリングまで ${nextPollTime}ms 待機します...`);
-    
-    // 指定された間隔後に再帰的に呼び出し
-    setTimeout(() => {
-      pollChatLoop(liveChatId, nextPageToken || null);
-    }, nextPollTime);
-    
-  } catch (error) {
-    console.error('ポーリング中にエラーが発生しました:', error);
-    
-    // エラー発生時は少し待ってから再試行
-    console.log('10秒後に再試行します...');
-    setTimeout(() => {
-      pollChatLoop(liveChatId, pageToken);
-    }, 10000);
-  }
-}
-
-// メイン処理を実行
-pollYouTubeChat().catch(error => {
-  console.error('予期せぬエラーが発生しました:', error);
-});
-</file>
-
-<file path="scripts/test-youtube-api.ts">
-// テスト用スクリプト: YouTube APIを利用してライブチャットのコメントを取得する（TypeScript版）
-
-import dotenv from 'dotenv';
-import { getLiveChatMessages, getLiveChatId } from '../lib/youtube';
-
-// 環境変数を読み込む
-dotenv.config({ path: '.env.local' });
-
-// メインの非同期関数
-async function testYouTubeApi(): Promise<void> {
-  try {
-    console.log('YouTube API接続テストを開始します...');
-    
-    // 環境変数から動画IDを取得
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
-    
-    if (!videoId) {
-      console.log('YOUTUBE_VIDEO_IDが設定されていません。');
-      return;
-    }
-    
-    console.log(`動画ID: ${videoId}`);
-    
-    // 動画IDからライブチャットIDを取得
-    console.log('ライブチャットIDを取得しています...');
-    const liveChatId = await getLiveChatId(videoId);
-    
-    if (!liveChatId) {
-      console.log('ライブチャットIDが取得できませんでした。');
-      console.log('この動画はライブ配信ではないか、ライブ配信が終了している可能性があります。');
-      return;
-    }
-    
-    console.log(`ライブチャットID: ${liveChatId}`);
-    
-    // ライブチャットのコメントを取得
-    console.log('ライブチャットコメントを取得しています...');
-    const chatData = await getLiveChatMessages(liveChatId);
-    
-    // 取得したデータを表示
-    console.log('ライブチャット情報:');
-    console.log(`ポーリング間隔: ${chatData.pollingIntervalMillis}ms`);
-    console.log(`次のページトークン: ${chatData.nextPageToken}`);
-    console.log(`コメント数: ${chatData.items?.length || 0}`);
-    
-    // 各コメントの内容を表示
-    if (chatData.items && chatData.items.length > 0) {
-      console.log('\n=== 最新のコメント ===');
-      chatData.items.forEach((item, index) => {
-        const author = item.authorDetails?.displayName || '不明なユーザー';
-        const text = item.snippet?.displayMessage || '';
-        const timestamp = new Date(item.snippet?.publishedAt || '').toLocaleString('ja-JP');
-        
-        console.log(`\n#${index + 1} [${timestamp}] ${author}:`);
-        console.log(`    "${text}"`);
-        
-        // コマンド検出 (例: /30) のテスト
-        const commandMatch = text.match(/\/(\d+)/);
-        if (commandMatch) {
-          const roomNumber = commandMatch[1];
-          console.log(`    ※ コマンド検出: /「${roomNumber}」の部屋に割り当て`);
-        }
-      });
-    } else {
-      console.log('\nコメントはありません。');
-    }
-    
-    console.log('\nYouTube API接続テスト完了');
-  } catch (error) {
-    console.error('エラーが発生しました:', error);
-  }
-}
-
-// スクリプト実行
-testYouTubeApi();
 </file>
 
 <file path=".gitignore">
@@ -9856,282 +10257,6 @@ export type Seat = {
 };
 </file>
 
-<file path="lib/sseUtils.ts">
-import { Db } from 'mongodb';
-
-/**
- * MongoDB から部屋と座席のデータを取得し、クライアント用にフォーマットする
- * @param db MongoDB データベース接続
- * @returns フォーマットされた部屋と座席のデータ
- */
-export async function fetchRoomData(db: Db) {
-  console.log('[SSE:Utils] Fetching room data from MongoDB');
-  try {
-    // すべての座席を取得（部屋IDに関わらず）
-    const allSeats = await db.collection('seats').find().toArray();
-    console.log(`[SSE:Utils] Retrieved ${allSeats.length} total seats from database`);
-    
-    // プロフィール画像URLがある座席を探す
-    const seatsWithProfileImage = allSeats.filter(seat => seat.profileImageUrl);
-    if (seatsWithProfileImage.length > 0) {
-      console.log(`[SSE:Utils] Found ${seatsWithProfileImage.length} seats with profile images in database:`);
-      seatsWithProfileImage.forEach(seat => {
-        console.log(`[SSE:Utils] Seat with profile image in DB: ${seat.username}, URL: ${seat.profileImageUrl}, room_id: ${seat.room_id}`);
-      });
-    } else {
-      console.log(`[SSE:Utils] No seats with profile images found in database`);
-    }
-    
-    // すべての部屋を取得
-    const rooms = await db.collection('rooms').find().toArray();
-    console.log(`[SSE:Utils] Retrieved ${rooms.length} rooms`);
-    
-    // 部屋IDごとの座席数を集計
-    const seatsByRoomId = allSeats.reduce((acc, seat) => {
-      const roomId = seat.room_id || 'unassigned';
-      acc[roomId] = (acc[roomId] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-    
-    console.log('[SSE:Utils] Seats count by room_id:', seatsByRoomId);
-    
-    // 通常の処理
-    const seats = rooms.length > 0 ? allSeats : allSeats;
-    
-    // 最初の数件の生のシートデータをログに出力（デバッグ用）
-    if (seats.length > 0) {
-      console.log('[SSE:Utils] DEBUG - Raw seats data sample:');
-      seats.slice(0, 3).forEach((seat, index) => {
-        console.log(`Seat ${index}:`, JSON.stringify({
-          _id: seat._id.toString(),
-          username: seat.username,
-          profileImageUrl: seat.profileImageUrl,
-          room_id: seat.room_id,
-          position: seat.position,
-        }, null, 2));
-      });
-    }
-
-    // roomsが空の場合は、シートを直接配列の最初の要素として使用する
-    if (rooms.length === 0) {
-      console.log('[SSE:Utils] No rooms found, creating a default room with all seats');
-      const defaultRoom = {
-        id: 'focus-room',
-        type: 'focus',
-        seats: seats.map(seat => ({
-          id: seat._id.toString(),
-          username: seat.username,
-          task: seat.task,
-          enterTime: seat.enterTime,
-          autoExitScheduled: seat.autoExitScheduled,
-          profileImageUrl: seat.profileImageUrl,
-          timestamp: seat.timestamp
-        }))
-      };
-
-      // 変換後のシートデータサンプルをログに出力
-      console.log('[SSE:Utils] DEBUG - Transformed default room seats sample:');
-      if (defaultRoom.seats.length > 0) {
-        defaultRoom.seats.slice(0, 3).forEach((seat, index) => {
-          console.log(`Transformed Seat ${index}:`, JSON.stringify(seat, null, 2));
-        });
-      }
-      
-      // プロフィール画像URLがある座席をログ出力
-      const transformedSeatsWithImage = defaultRoom.seats.filter(seat => seat.profileImageUrl);
-      if (transformedSeatsWithImage.length > 0) {
-        console.log(`[SSE:Utils] Found ${transformedSeatsWithImage.length} transformed seats with profile images in default room:`);
-        transformedSeatsWithImage.forEach(seat => {
-          console.log(`[SSE:Utils] Transformed seat with profile image: ${seat.username}, URL: ${seat.profileImageUrl}`);
-        });
-      }
-
-      return { rooms: [defaultRoom] };
-    }
-
-    // 部屋ごとに座席をマッピングする詳細ログ
-    console.log('[SSE:Utils] Mapping seats to rooms...');
-    rooms.forEach(room => {
-      const roomSeats = seats.filter(seat => seat.room_id === room._id);
-      console.log(`[SSE:Utils] Room ${room._id}: ${roomSeats.length} seats found`);
-      
-      // この部屋にプロフィール画像付きの座席があるか確認
-      const roomSeatsWithImages = roomSeats.filter(seat => seat.profileImageUrl);
-      if (roomSeatsWithImages.length > 0) {
-        console.log(`[SSE:Utils] Room ${room._id} has ${roomSeatsWithImages.length} seats with profile images`);
-      }
-    });
-
-    const roomsWithSeats = rooms.map(room => {
-      // この部屋の座席を取得
-      const roomSeats = seats
-        .filter(seat => seat.room_id === room._id)
-        .sort((a, b) => a.position - b.position);
-        
-      console.log(`[SSE:Utils] Processing room ${room._id} with ${roomSeats.length} seats`);
-      
-      // プロフィール画像URLがある座席をログ出力
-      const seatsWithImages = roomSeats.filter(seat => seat.profileImageUrl);
-      if (seatsWithImages.length > 0) {
-        console.log(`[SSE:Utils] Room ${room._id} has ${seatsWithImages.length} seats with profile images before transform`);
-      }
-      
-      // 座席データを変換
-      const transformedSeats = roomSeats.map(seat => ({
-        id: seat._id.toString(),
-        username: seat.username,
-        task: seat.task,
-        enterTime: seat.enterTime,
-        autoExitScheduled: seat.autoExitScheduled,
-        profileImageUrl: seat.profileImageUrl,
-        timestamp: seat.timestamp
-      }));
-      
-      // 変換後にプロフィール画像URLがある座席をログ出力
-      const transformedSeatsWithImages = transformedSeats.filter(seat => seat.profileImageUrl);
-      if (transformedSeatsWithImages.length > 0) {
-        console.log(`[SSE:Utils] Room ${room._id} has ${transformedSeatsWithImages.length} seats with profile images after transform`);
-        transformedSeatsWithImages.forEach(seat => {
-          console.log(`[SSE:Utils] Transformed seat with profile image: ${seat.username}, URL: ${seat.profileImageUrl}`);
-        });
-      }
-      
-      return {
-        id: room._id,
-        seats: transformedSeats
-      };
-    });
-
-    // 変換後のデータサンプルをログに出力
-    console.log('[SSE:Utils] DEBUG - Transformed rooms data sample:');
-    if (roomsWithSeats.length > 0 && roomsWithSeats[0].seats.length > 0) {
-      const sampleSeats = roomsWithSeats[0].seats.slice(0, 3);
-      console.log(`Room ${roomsWithSeats[0].id} sample seats:`, 
-        JSON.stringify(sampleSeats, null, 2));
-    }
-
-    console.log('[SSE:Utils] Room data formatted successfully');
-    // プロフィール画像URLの例をログに出力（デバッグ用）
-    if (seats.length > 0 && seats.some(seat => seat.profileImageUrl)) {
-      const exampleSeat = seats.find(seat => seat.profileImageUrl);
-      console.log(`[SSE:Utils] DEBUG - Example profile image URL: ${exampleSeat?.profileImageUrl}`);
-      
-      // JSON形式でログ出力
-      console.log('[SSE:Utils] DEBUG - Seat with profile image:', 
-        JSON.stringify({
-          _id: exampleSeat?._id.toString(),
-          username: exampleSeat?.username,
-          profileImageUrl: exampleSeat?.profileImageUrl,
-          room_id: exampleSeat?.room_id
-        }, null, 2));
-    } else {
-      console.log('[SSE:Utils] DEBUG - No profile image URLs found in seats data');
-    }
-    
-    // 最終的な結果にプロフィール画像URLがある座席があるか確認
-    let totalSeatsWithProfileImages = 0;
-    roomsWithSeats.forEach(room => {
-      const roomSeatsWithImages = room.seats.filter(seat => seat.profileImageUrl);
-      totalSeatsWithProfileImages += roomSeatsWithImages.length;
-    });
-    
-    if (totalSeatsWithProfileImages > 0) {
-      console.log(`[SSE:Utils] Final data has ${totalSeatsWithProfileImages} seats with profile images`);
-    } else {
-      console.log(`[SSE:Utils] Final data has NO seats with profile images`);
-    }
-    
-    return { rooms: roomsWithSeats };
-  } catch (error) {
-    console.error('[SSE:Utils] Error fetching room data:', error);
-    return { rooms: [], error: 'Failed to fetch data' };
-  }
-}
-
-/**
- * 指数バックオフ付きの再接続試行回数とタイムアウトを計算する
- * @param retryCount 現在の試行回数
- * @param baseDelay 基本の待機時間（ミリ秒）
- * @param maxDelay 最大待機時間（ミリ秒）
- * @returns 次回待機時間（ミリ秒）
- */
-export function calculateBackoff(retryCount: number, baseDelay: number = 1000, maxDelay: number = 30000): number {
-  // 指数バックオフ（2のべき乗）とランダム要素（ジッター）を加える
-  const exponentialDelay = Math.min(
-    maxDelay,
-    baseDelay * Math.pow(2, retryCount) * (1 + Math.random() * 0.2)
-  );
-  return Math.round(exponentialDelay);
-}
-
-/**
- * システムメッセージをクライアントに送信するためのSSEメッセージを生成する
- * @param message メッセージ内容
- * @param type メッセージタイプ（info, warning, error など）
- * @returns フォーマットされたSSEメッセージ
- */
-export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info'): string {
-  return `event: system-message\ndata: ${JSON.stringify({ message, type, timestamp: new Date().toISOString() })}\n\n`;
-}
-
-/**
- * MongoDB Change Streamの接続状態を追跡するためのクラス
- * グローバルな状態を管理し、複数のSSE接続間で自動退室チェックの重複を防ぐ
- */
-export class ChangeStreamManager {
-  private static instance: ChangeStreamManager;
-  private activeConnections: number = 0;
-
-  private constructor() {}
-
-  public static getInstance(): ChangeStreamManager {
-    if (!ChangeStreamManager.instance) {
-      ChangeStreamManager.instance = new ChangeStreamManager();
-    }
-    return ChangeStreamManager.instance;
-  }
-
-  /**
-   * 新しいSSE接続を登録する
-   * @returns 登録後のアクティブ接続数
-   */
-  public registerConnection(): number {
-    this.activeConnections++;
-    console.log(`[SSE:Manager] New connection registered. Active connections: ${this.activeConnections}`);
-    // 最初の接続が登録されたことを示すフラグを返す
-    return this.activeConnections;
-  }
-
-  /**
-   * SSE接続の終了を登録する
-   * @returns 残りのアクティブ接続数
-   */
-  public unregisterConnection(): number {
-    this.activeConnections = Math.max(0, this.activeConnections - 1);
-    console.log(`[SSE:Manager] Connection unregistered. Active connections: ${this.activeConnections}`);
-    return this.activeConnections;
-  }
-
-  /**
-   * 現在のアクティブな接続数を取得する
-   * @returns アクティブな接続数
-   */
-  public getActiveConnections(): number {
-    return this.activeConnections;
-  }
-
-  /**
-   * このインスタンスで自動退室チェックを開始すべきか判断する
-   * (通常、最初の接続時にtrueを返す)
-   * @returns 開始すべきならtrue
-   */
-  public shouldStartAutoExitCheckOnRegister(): boolean {
-    // activeConnectionsがインクリメントされた直後に呼ばれる想定
-    return this.activeConnections === 1;
-  }
-}
-</file>
-
 <file path="lib/types.ts">
 // クライアント・サーバー共通の型定義
 
@@ -10265,74 +10390,6 @@ export interface AutoExitProcessResult {
 }
 </file>
 
-<file path="scripts/test-mongodb.ts">
-// MongoDB接続テスト用スクリプト
-import { MongoClient } from 'mongodb';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
-
-// .env.localを読み込み
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
-
-async function testMongoDBConnection() {
-  if (!process.env.MONGODB_URI) {
-    console.error('環境変数MONGODB_URIが設定されていません');
-    process.exit(1);
-  }
-
-  const client = new MongoClient(process.env.MONGODB_URI);
-
-  try {
-    console.log('MongoDB接続テストを開始します...');
-    
-    // データベースに接続
-    await client.connect();
-    console.log('MongoDB接続成功！');
-    
-    // データベース情報を表示
-    const db = client.db('coworking');
-    const collections = await db.listCollections().toArray();
-    
-    console.log('データベース: coworking');
-    console.log('コレクション一覧:');
-    collections.forEach((collection, index) => {
-      console.log(`${index + 1}. ${collection.name}`);
-    });
-    
-    // roomsコレクションのデータ取得
-    const rooms = await db.collection('rooms').find().toArray();
-    console.log('\nルーム数:', rooms.length);
-    console.log('ルーム一覧:', rooms.map(room => room._id));
-    
-    // seatsコレクションのデータ取得
-    const seats = await db.collection('seats').find().toArray();
-    console.log('\n座席数:', seats.length);
-    console.log('最初の座席データ例:', JSON.stringify(seats[0] || 'データなし', null, 2));
-
-    // 座席数とユーザー数を確認
-    const userSeats = await db.collection('seats').find({ username: { $ne: null } }).toArray();
-    console.log('\n現在利用中の座席数:', userSeats.length);
-    if (userSeats.length > 0) {
-      console.log('入室中のユーザー一覧:');
-      userSeats.forEach((seat, index) => {
-        const enterTime = seat.enterTime ? new Date(seat.enterTime).toLocaleString() : '不明';
-        const exitTime = seat.autoExitScheduled ? new Date(seat.autoExitScheduled).toLocaleString() : '不明';
-        console.log(`${index + 1}. ${seat.username} - 部屋: ${seat.room_id}, 座席: ${seat.position}, 入室: ${enterTime}, 自動退室: ${exitTime}`);
-      });
-    }
-
-    console.log('\nMongoDBテスト完了');
-  } catch (error) {
-    console.error('MongoDB接続エラー:', error);
-  } finally {
-    await client.close();
-  }
-}
-
-// スクリプト実行
-testMongoDBConnection();
-</file>
-
 <file path=".eslintrc.json">
 {
   "extends": [
@@ -10451,373 +10508,24 @@ testMongoDBConnection();
 - [ ] `.env.example` ファイルを作成・更新し、必要な環境変数を明記
 </file>
 
-<file path="app/api/sse/route.ts">
-import { NextResponse } from 'next/server';
-import clientPromise from '@/lib/mongodb';
-import { checkAndProcessAutoExit } from '@/lib/autoExit';
-import { fetchRoomData, calculateBackoff, createSystemMessage, ChangeStreamManager } from '@/lib/sseUtils';
-import { ChangeStream, ChangeStreamDocument, Db } from 'mongodb';
-
-export async function GET() {
-  console.log('[SSE] Handler started');
-  try {
-    console.log('[SSE] Connecting to MongoDB...');
-    const client = await clientPromise;
-    const db: Db = client.db('coworking');
-    console.log('[SSE] MongoDB connection established');
-    const encoder = new TextEncoder();
-
-    // シングルトンのChangeStreamManagerを取得
-    const manager = ChangeStreamManager.getInstance();
-
-    // コントローラーがクローズされたかを追跡するフラグ
-    let isControllerClosed = false;
-    // 再接続の試行回数
-    let changeStreamRetryCount = 0;
-    // アクティブなChangeStream
-    let seatsChangeStream: ChangeStream | null = null;
-    let notificationsChangeStream: ChangeStream | null = null;
-    // この接続が管理する自動退室チェックのインターバルID
-    let autoExitIntervalId: NodeJS.Timeout | null = null;
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        console.log('[SSE] Stream initialization started');
-        // このSSE接続を登録
-        manager.registerConnection();
-
-        // 自動退室チェック関数
-        const checkAutoExit = async () => {
-          // コントローラーがクローズされていたら何もしない
-          if (isControllerClosed) {
-            console.log('[SSE] Auto-exit check skipped: Controller closed.');
-            // インターバルもクリアすべき
-            if (autoExitIntervalId) {
-               clearInterval(autoExitIntervalId);
-               autoExitIntervalId = null;
-               console.log('[SSE] Auto-exit interval cleared due to closed controller during check.');
-            }
-            return;
-          }
-          try {
-            console.log('[SSE] 自動退室チェックを実行します');
-            const results = await checkAndProcessAutoExit(db, false); // 通知は無効
-
-            if (results.processedCount > 0) {
-              console.log(`[SSE] ${results.processedCount}件の座席を自動退室処理しました`);
-              if (!isControllerClosed) {
-                const updatedData = await fetchRoomData(db);
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify(updatedData)}\n\n`));
-                controller.enqueue(encoder.encode(
-                  createSystemMessage(`${results.processedCount}人のユーザーが自動退室しました`, 'info')
-                ));
-                console.log('[SSE] 自動退室後のデータをクライアントに送信しました');
-              }
-            } else {
-              console.log('[SSE] 期限切れの座席はありませんでした');
-            }
-          } catch (error) {
-            console.error('[SSE] 自動退室チェック中にエラーが発生しました:', error);
-             if (!isControllerClosed) {
-                controller.enqueue(encoder.encode(
-                  createSystemMessage(`自動退室チェック中にエラー発生: ${(error as Error).message}`, 'error')
-                ));
-            }
-          }
-        };
-
-        // seats コレクションの Change Stream を設定する関数
-        const setupSeatsChangeStream = async () => {
-          try {
-            if (seatsChangeStream) {
-               await seatsChangeStream.close().catch((err: Error) => console.error('[SSE] Error closing previous seats change stream:', err));
-               seatsChangeStream = null; // Clear reference
-            }
-
-            console.log('[SSE] Setting up MongoDB seats change stream');
-            seatsChangeStream = db.collection('seats').watch();
-            console.log('[SSE] Seats change stream initialized');
-
-            // --- 自動退室チェックの開始ロジック ---
-            // このインスタンスで、かつ最初の接続の場合のみインターバルを開始する
-            if (manager.shouldStartAutoExitCheckOnRegister() && !autoExitIntervalId) {
-              console.log('[SSE] Starting auto-exit check interval for this instance.');
-              autoExitIntervalId = setInterval(checkAutoExit, 60000); // 1分ごと
-            } else if (autoExitIntervalId) {
-               console.log('[SSE] Auto-exit check interval is already running for this connection.');
-            }
-             else {
-              console.log('[SSE] Auto-exit check interval not started (not the first connection for this instance or already running).');
-            }
-            // --- ここまで ---
-
-            seatsChangeStream.on('change', async (changeEvent: ChangeStreamDocument) => {
-              if (isControllerClosed) {
-                console.log('[SSE] Controller is already closed, ignoring change event');
-                return;
-              }
-              console.log('[SSE] Change detected in seats collection:', JSON.stringify(changeEvent.operationType));
-              try {
-                console.log('[SSE] Fetching updated data after change');
-                const data = await fetchRoomData(db);
-                console.log('[SSE] Sending updated data to client');
-                if (!isControllerClosed) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-                }
-              } catch (error) {
-                console.error('[SSE] Error processing change stream update:', error);
-                if (!isControllerClosed) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
-                  controller.enqueue(encoder.encode(
-                    createSystemMessage('データ更新中にエラーが発生しました', 'error')
-                  ));
-                }
-              }
-            });
-
-            seatsChangeStream.on('error', async (error: Error) => {
-              console.error('[SSE] Seats change stream error:', error);
-              if (!isControllerClosed) {
-                controller.enqueue(encoder.encode(
-                  createSystemMessage('サーバーとの接続に問題が発生しました。再接続を試みています...', 'warning')
-                ));
-              }
-
-              console.log('[SSE] Closing seats change stream due to error');
-              if (seatsChangeStream) {
-                await seatsChangeStream.close().catch((err: Error) => console.error('[SSE] Error closing seats change stream on error:', err));
-                seatsChangeStream = null; // Clear reference after closing
-              }
-
-              const MAX_RETRIES = 10;
-              if (changeStreamRetryCount < MAX_RETRIES && !isControllerClosed) {
-                changeStreamRetryCount++;
-                const delayMs = calculateBackoff(changeStreamRetryCount);
-                console.log(`[SSE] Will attempt to reconnect change stream in ${delayMs}ms (retry ${changeStreamRetryCount}/${MAX_RETRIES})`);
-
-                setTimeout(async () => {
-                  if (!isControllerClosed) {
-                    console.log(`[SSE] Attempting to reconnect to change stream (retry ${changeStreamRetryCount}/${MAX_RETRIES})`);
-                    try {
-                      await setupChangeStream();
-                      // 再接続成功したらリトライカウントをリセット
-                      changeStreamRetryCount = 0; // リセット！
-                      console.log('[SSE] Successfully reconnected to change stream');
-
-                      if (!isControllerClosed) {
-                        controller.enqueue(encoder.encode(
-                          createSystemMessage('サーバーとの接続が回復しました', 'info')
-                        ));
-                        const refreshedData = await fetchRoomData(db);
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(refreshedData)}\n\n`));
-                      }
-                    } catch (reconnectError) {
-                      console.error('[SSE] Failed to reconnect to change stream:', reconnectError);
-                      // 再接続失敗した場合、さらに待機するか、エラー処理を継続
-                    }
-                  }
-                }, delayMs);
-              } else if (!isControllerClosed) {
-                console.error(`[SSE] Maximum reconnection attempts (${MAX_RETRIES}) reached or controller closed`);
-                controller.enqueue(encoder.encode(
-                  createSystemMessage('サーバーとの接続が失われました。ページを再読み込みしてください。', 'error')
-                ));
-              }
-            });
-          } catch (setupError) {
-            console.error('[SSE] Error setting up seats change stream:', setupError);
-            if (!isControllerClosed) {
-                controller.enqueue(encoder.encode(
-                    createSystemMessage('座席データのストリーム監視設定に失敗しました。', 'error')
-                ));
-            }
-            throw setupError; // エラーを上に伝播させる
-          }
-        };
-
-        // notifications コレクションの Change Stream を設定する関数
-        const setupNotificationsChangeStream = async () => {
-          try {
-            if (notificationsChangeStream) {
-              await notificationsChangeStream.close().catch((err: Error) => 
-                console.error('[SSE] Error closing previous notifications change stream:', err));
-              notificationsChangeStream = null;
-            }
-
-            console.log('[SSE] Setting up MongoDB notifications change stream');
-            notificationsChangeStream = db.collection('notifications').watch();
-            console.log('[SSE] Notifications change stream initialized');
-
-            notificationsChangeStream.on('change', async (changeEvent: ChangeStreamDocument) => {
-              if (isControllerClosed) {
-                console.log('[SSE] Controller is already closed, ignoring notifications change event');
-                return;
-              }
-
-              // 挿入操作のみを処理
-              if (changeEvent.operationType === 'insert') {
-                try {
-                  const notification = changeEvent.fullDocument;
-                  if (notification) {
-                    console.log('[SSE] New notification detected:', notification.message);
-                    
-                    // システムメッセージとして送信
-                    if (!isControllerClosed) {
-                      controller.enqueue(encoder.encode(
-                        createSystemMessage(
-                          notification.message,
-                          notification.type || 'info'
-                        )
-                      ));
-                    }
-                  }
-                } catch (error) {
-                  console.error('[SSE] Error processing notification change:', error);
-                }
-              }
-            });
-
-            notificationsChangeStream.on('error', async (error: Error) => {
-              console.error('[SSE] Notifications change stream error:', error);
-              
-              if (notificationsChangeStream) {
-                await notificationsChangeStream.close().catch((err: Error) => 
-                  console.error('[SSE] Error closing notifications change stream on error:', err));
-                notificationsChangeStream = null;
-              }
-              
-              // エラー発生時は一定時間後に再接続を試みる
-              if (!isControllerClosed) {
-                setTimeout(async () => {
-                  if (!isControllerClosed) {
-                    try {
-                      await setupNotificationsChangeStream();
-                      console.log('[SSE] Successfully reconnected to notifications change stream');
-                    } catch (reconnectError) {
-                      console.error('[SSE] Failed to reconnect to notifications change stream:', reconnectError);
-                    }
-                  }
-                }, 5000); // 5秒後に再接続
-              }
-            });
-          } catch (setupError) {
-            console.error('[SSE] Error setting up notifications change stream:', setupError);
-            // 通知ストリームのエラーは非致命的として扱い、メイン処理は継続
-          }
-        };
-
-        // 両方のChangeStreamを初期化する関数
-        const setupChangeStream = async () => {
-          await setupSeatsChangeStream();
-          await setupNotificationsChangeStream();
-        };
-
-        try {
-          console.log('[SSE] Preparing to send initial data');
-          const initialData = await fetchRoomData(db);
-          console.log('[SSE] Sending initial data to client');
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialData)}\n\n`));
-
-          await setupChangeStream();
-
-          // クリーンアップ関数
-          const cleanup = () => {
-            console.log('[SSE] Cleaning up resources...');
-            
-            // インターバルをクリア
-            if (autoExitIntervalId) {
-              clearInterval(autoExitIntervalId);
-              autoExitIntervalId = null;
-            }
-            
-            // ChangeStreamを閉じる
-            if (seatsChangeStream) {
-              seatsChangeStream.close().catch(err => console.error('[SSE] Error closing seats change stream during cleanup:', err));
-              seatsChangeStream = null;
-            }
-            
-            if (notificationsChangeStream) {
-              notificationsChangeStream.close().catch(err => console.error('[SSE] Error closing notifications change stream during cleanup:', err));
-              notificationsChangeStream = null;
-            }
-            
-            // 接続を登録解除
-            manager.unregisterConnection();
-            console.log('[SSE] Cleanup completed');
-          };
-          
-          // クリーンアップ関数を返す
-          return cleanup;
-
-        } catch (initError) {
-          console.error('[SSE] Error during initialization:', initError);
-          controller.enqueue(encoder.encode(
-            createSystemMessage('初期化中にエラーが発生しました: ' + (initError as Error).message, 'error')
-          ));
-          controller.error(initError);
-          return () => {
-            manager.unregisterConnection();
-            if (autoExitIntervalId) clearInterval(autoExitIntervalId);
-            if (seatsChangeStream) seatsChangeStream.close().catch(console.error);
-            if (notificationsChangeStream) notificationsChangeStream.close().catch(console.error);
-          };
-        }
-      },
-      
-      cancel() {
-        console.log('[SSE] Stream cancelled by client');
-        isControllerClosed = true;
-        
-        // インターバルをクリア
-        if (autoExitIntervalId) {
-          clearInterval(autoExitIntervalId);
-          autoExitIntervalId = null;
-        }
-        
-        // ChangeStreamを閉じる
-        if (seatsChangeStream) {
-          seatsChangeStream.close().catch(err => console.error('[SSE] Error closing seats change stream during cancel:', err));
-          seatsChangeStream = null;
-        }
-        
-        if (notificationsChangeStream) {
-          notificationsChangeStream.close().catch(err => console.error('[SSE] Error closing notifications change stream during cancel:', err));
-          notificationsChangeStream = null;
-        }
-        
-        // 接続を登録解除
-        manager.unregisterConnection();
-        console.log('[SSE] Stream cancellation cleanup completed');
-      }
-    });
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        'Connection': 'keep-alive',
-      },
-    });
-  } catch (error) {
-    console.error('[SSE] Unhandled error:', error);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 }
-    );
-  }
-}
-</file>
-
 <file path="app/api/youtube-comments/route.ts">
 import { NextResponse } from 'next/server';
 // CommonJS形式のライブラリをインポート
 import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
 import { detectCommand } from '@/lib/utils';
+import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
 
 // インメモリキャッシュ（サーバー再起動時にリセットされます）
 const liveChatIdCache: Record<string, string> = {};
 // 処理済みコメントIDを保存するSet
 const processedCommentIds = new Set<string>();
+// エラーバックオフのための状態管理
+const errorState = {
+  lastErrorTime: 0,
+  quotaExceeded: false,
+  backoffUntil: 0,
+  consecutiveErrors: 0
+};
 
 // コメントアイテムの型定義
 interface ChatItem {
@@ -10844,11 +10552,25 @@ interface ChatItem {
  */
 export async function GET() {
   try {
+    // 現在時刻が backoffUntil を下回る場合はエラーを返す（APIリクエスト抑制）
+    const now = Date.now();
+    if (now < errorState.backoffUntil) {
+      const remainingSeconds = Math.ceil((errorState.backoffUntil - now) / 1000);
+      console.log(`[Comments API] APIリクエスト抑制中 (残り${remainingSeconds}秒)`);
+      return NextResponse.json({ 
+        error: `APIクォータ超過のため一時的に利用できません。(残り${remainingSeconds}秒)`,
+        commands: [],
+        backoff: true,
+        remainingSeconds
+      }, { status: 429 });
+    }
+
     // 環境変数から動画IDを取得
     console.log('[Comments API] コメント取得開始');
     const videoId = process.env.YOUTUBE_VIDEO_ID;
     // BOTのチャンネルID（環境変数から取得または直接指定）
     const botChannelId = process.env.YOUTUBE_BOT_CHANNEL_ID || '';
+    const adminChannelId = process.env.ADMIN_YOUTUBE_CHANNEL_ID; // 運営者IDを取得
     
     if (!videoId) {
       return NextResponse.json({ error: 'YOUTUBE_VIDEO_IDが設定されていません' }, { status: 400 });
@@ -10856,37 +10578,138 @@ export async function GET() {
     
     // キャッシュからliveChatIdを取得
     let liveChatId = liveChatIdCache[videoId];
+    let usedCache = false;
     
     // キャッシュにない場合のみAPIを呼び出し
     if (!liveChatId) {
-      console.log(`[Comments API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
-      const fetchedLiveChatId = await getLiveChatId(videoId);
-      
-      if (fetchedLiveChatId) {
-        // キャッシュに保存
-        liveChatId = fetchedLiveChatId;
-        console.log(`[Comments API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
-        liveChatIdCache[videoId] = liveChatId;
-      } else {
-        return NextResponse.json({ error: 'ライブチャットIDが取得できませんでした' }, { status: 404 });
+      try {
+        console.log(`[Comments API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
+        const fetchedLiveChatId = await getLiveChatId(videoId);
+        
+        if (fetchedLiveChatId) {
+          // キャッシュに保存
+          liveChatId = fetchedLiveChatId;
+          console.log(`[Comments API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
+          liveChatIdCache[videoId] = liveChatId;
+          
+          // エラー状態をリセット
+          errorState.consecutiveErrors = 0;
+          errorState.quotaExceeded = false;
+        } else {
+          return NextResponse.json({ error: 'ライブチャットIDが取得できませんでした' }, { status: 404 });
+        }
+      } catch (error: any) {
+        // API呼び出しに失敗した場合のエラーハンドリング
+        console.error('[Comments API] ライブチャットID取得エラー:', error);
+        
+        // クォータ超過エラーの場合、長めのバックオフを設定
+        if (error?.message?.includes('quota') || error?.response?.status === 403 || 
+            error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
+          
+          errorState.quotaExceeded = true;
+          errorState.lastErrorTime = now;
+          
+          // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
+          const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
+          errorState.backoffUntil = now + backoffTime;
+          errorState.consecutiveErrors++;
+          
+          console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+          
+          return NextResponse.json({ 
+            error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
+            commands: [],
+            backoff: true
+          }, { status: 429 });
+        }
+        
+        // その他のエラーの場合
+        errorState.consecutiveErrors++;
+        
+        if (errorState.consecutiveErrors > 3) {
+          // 連続エラー回数が多い場合は一時的にバックオフ
+          const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+          errorState.backoffUntil = now + backoffTime;
+          
+          console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+          
+          return NextResponse.json({ 
+            error: `YouTube APIに接続できません。${backoffTime / 60000}分後に再試行してください。`,
+            commands: [],
+            backoff: true
+          }, { status: 503 });
+        }
+        
+        return NextResponse.json({ error: 'ライブチャットIDの取得に失敗しました' }, { status: 500 });
       }
     } else {
       console.log(`[Comments API] キャッシュからliveChatIdを取得しました (videoId: ${videoId}, liveChatId: ${liveChatId})`);
+      usedCache = true;
     }
     
     // ページトークンをクエリから取得（初回は null）
     const pageToken = null; // 注: 実装を簡単にするため固定
     
     // コメントデータを取得
-    const chatData = await getLiveChatMessages(liveChatId, pageToken);
+    let chatData;
+    try {
+      chatData = await getLiveChatMessages(liveChatId, pageToken);
+      
+      // 成功したらエラーカウントをリセット
+      errorState.consecutiveErrors = 0;
+    } catch (error: any) {
+      console.error('[Comments API] コメント取得エラー:', error);
+      
+      // クォータ超過エラーの場合
+      if (error?.message?.includes('quota') || error?.response?.status === 403 || 
+          error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
+        
+        errorState.quotaExceeded = true;
+        errorState.lastErrorTime = now;
+        
+        // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
+        const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
+        errorState.backoffUntil = now + backoffTime;
+        errorState.consecutiveErrors++;
+        
+        console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+        
+        return NextResponse.json({ 
+          error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
+          commands: [],
+          backoff: true
+        }, { status: 429 });
+      }
+      
+      // その他のエラーの場合
+      errorState.consecutiveErrors++;
+      
+      // 連続エラーが続く場合はバックオフを設定
+      if (errorState.consecutiveErrors > 3) {
+        const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+        errorState.backoffUntil = now + backoffTime;
+        
+        return NextResponse.json({ 
+          error: `コメントの取得に失敗しました。${backoffTime / 60000}分後に再試行してください。`,
+          commands: [],
+          backoff: true
+        }, { status: 503 });
+      }
+      
+      return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
+    }
     
     // 検出済みコマンドの配列を準備
     const detectedCommands = [];
-    
+    const client = await clientPromise; // MongoDBクライアントを取得
+    const db = client.db('coworking'); // データベースを選択
+    const announcementsCollection = db.collection('announcements'); // コレクションを選択
+
     // コメントごとにコマンド検出を行う
     for (const item of chatData.items || []) {
       const commentId = item.id;
       const commentText = item.snippet?.displayMessage || '';
+      const publishedAt = item.snippet?.publishedAt; // YouTube上の公開日時
       
       // API構造に応じて投稿者情報を取得（snippetとauthorDetailsの両方をチェック）
       const authorName = item.snippet?.authorDisplayName || item.authorDetails?.displayName;
@@ -10910,8 +10733,32 @@ export async function GET() {
       }
       
       console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
-      console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`);
+      // console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`); // 必要ならログ出力
       
+      // ★★★ 運営者コメントか判定 ★★★
+      if (adminChannelId && authorId === adminChannelId) {
+        console.log(`[Comments API] お知らせコメント検出: ${authorName} - ${commentText}`);
+        try {
+          // お知らせをDBに保存
+          await announcementsCollection.insertOne({
+            message: commentText,
+            authorChannelId: authorId,
+            authorName: authorName, // 念のため名前も保存
+            profileImageUrl: profileImageUrl, // プロフィール画像も保存
+            publishedAt: publishedAt ? new Date(publishedAt) : new Date(), // 日付形式に変換
+            createdAt: new Date(), // サーバーでの保存日時
+          });
+          console.log(`[Comments API] お知らせをDBに保存しました: ${commentText}`);
+          processedCommentIds.add(commentId); // 処理済みとしてマーク
+        } catch (dbError) {
+          console.error('[Comments API] お知らせのDB保存エラー:', dbError);
+          // エラーが発生しても処理を続行する（他のコメントに影響を与えない）
+        }
+        // 運営者コメントはお知らせ専用なので、コマンド検出は行わない
+        continue; // 次のコメントへ
+      }
+
+      // --- 運営者コメントでない場合の処理 ---
       // コマンド検出
       const { command, taskName } = detectCommand(commentText);
       
@@ -10932,6 +10779,8 @@ export async function GET() {
         // 処理済みとしてマーク
         processedCommentIds.add(commentId);
       }
+      // コマンドがない通常のコメントはここでは何もせず、processedCommentIdsにも追加しない
+      // （必要なら後で処理済みにするなどのロジックを追加可能）
     }
     
     // 処理済みID数が多くなりすぎないように、最新の1000件だけを保持
@@ -10955,404 +10804,33 @@ export async function GET() {
       comments,
       commands: detectedCommands,
       nextPageToken: chatData.nextPageToken,
-      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000
+      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000,
+      usedCache // キャッシュを使用したかどうかを返す
     });
     
   } catch (error) {
     console.error('[Comments API] YouTube API エラー:', error);
+    
+    // エラーカウントを増やす
+    errorState.consecutiveErrors++;
+    
+    // 連続エラーが多い場合はバックオフを設定
+    if (errorState.consecutiveErrors > 3) {
+      const now = Date.now();
+      const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+      errorState.backoffUntil = now + backoffTime;
+      
+      console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+      
+      return NextResponse.json({ 
+        error: `サービスが一時的に利用できません。${backoffTime / 60000}分後に再試行してください。`,
+        commands: [],
+        backoff: true
+      }, { status: 503 });
+    }
+    
     return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
   }
-}
-</file>
-
-<file path="app/page.tsx">
-"use client";
-
-import { useEffect, useState, useRef, useCallback } from "react";
-import Room from "@/components/Room";
-import { Card } from "@/components/ui/card";
-import FocusRoom from "@/components/FocusRoom";
-import Header from "@/components/Header";
-import BGMPlayer from "@/components/BGMPlayer";
-import NotificationTicker, { Notification } from "@/components/NotificationTicker";
-import { toast } from "@/hooks/use-toast";
-import { useSeatData, RoomData, Seat } from "@/hooks/use-seat-data";
-import { useSSE, SSEConnectionState } from "@/hooks/use-sse";
-import { AlertCircle, WifiOff, Loader2 } from "lucide-react";
-import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Command } from "@/lib/types";
-
-// 通知の最大保持数
-const MAX_NOTIFICATIONS = 20;
-
-// SSEデータの型
-interface SSEData {
-  rooms: RoomData[];
-  error?: string;
-}
-
-// システムメッセージの型
-interface SystemMessagePayload {
-  message: string;
-  type: 'info' | 'warning' | 'error';
-  timestamp: string; // ISO String
-  id?: string; // バックエンドでユニークIDを付与するのが望ましい
-}
-
-export default function Home() {
-  // 元のSSEから座席データを取得コードを無効化
-  // const { rooms, isLoading, connectionState, refreshData } = useSeatData();
-  
-  // 独自のSSE接続を使用
-  const [rooms, setRooms] = useState<RoomData[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  
-  // コマンド処理の状態管理
-  const [isProcessingCommand, setIsProcessingCommand] = useState(false);
-  const processingCommandsRef = useRef<Set<string>>(new Set());
-
-  // お知らせメッセージ処理
-  const handleSystemMessage = useCallback((messagePayload: SystemMessagePayload) => {
-    console.log('[Page] System Message Received:', messagePayload);
-    const newNotification: Notification = {
-      // バックエンドでIDが付与されていない場合、クライアントで生成
-      id: messagePayload.id || `${Date.now()}-${Math.random()}`,
-      message: messagePayload.message,
-      timestamp: new Date(messagePayload.timestamp).getTime(),
-      type: messagePayload.type,
-    };
-
-    setNotifications(prev => {
-      // 重複チェック（同じメッセージが短時間で複数来ないように）
-      // if (prev.length > 0 && prev[0].message === newNotification.message && (Date.now() - prev[0].timestamp < 2000)) {
-      //   return prev;
-      // }
-      const updated = [newNotification, ...prev];
-      return updated.slice(0, MAX_NOTIFICATIONS); // 最大件数制限
-    });
-
-    // トースト通知も表示
-    toast({
-      title: messagePayload.type === 'error' ? 'エラー' : 
-             messagePayload.type === 'warning' ? '警告' : 'お知らせ',
-      description: messagePayload.message,
-      variant: messagePayload.type === 'error' ? 'destructive' : 'default',
-    });
-  }, []);
-
-  // 座席データメッセージ処理
-  const handleSeatDataMessage = useCallback((data: SSEData) => {
-    if (data.rooms && Array.isArray(data.rooms)) {
-      console.log(`[Page] Received ${data.rooms.length} rooms from SSE`);
-      setRooms(data.rooms);
-    } else if (data.error) {
-      console.error('[Page] Error in SSE data:', data.error);
-      // エラー通知はお知らせティッカーかトーストで表示
-      handleSystemMessage({ 
-        message: data.error, 
-        type: 'error', 
-        timestamp: new Date().toISOString()
-      });
-    }
-  }, [handleSystemMessage]);
-
-  // SSE接続フック
-  const {
-    connectionState,
-    connect: refreshData,
-  } = useSSE<SSEData>({
-    endpoint: '/api/sse',
-    onMessage: handleSeatDataMessage, // 座席データ用ハンドラ
-    onSystemMessage: handleSystemMessage, // お知らせ用ハンドラ
-    onConnect: () => {
-      console.log('[Page] SSE connection established');
-    },
-    onDisconnect: () => {
-      console.log('[Page] SSE connection closed');
-    },
-    onError: (error) => {
-      console.error('[Page] SSE connection error:', error);
-    },
-    maxRetries: 5, // 最大再試行回数
-  });
-
-  // isLoading状態の計算
-  const isLoading = connectionState === 'connecting' || connectionState === 'reconnecting';
-  
-  useEffect(() => {
-    // YouTubeコメント取得のポーリング
-    const fetchYoutubeComments = async () => {
-      try {
-        console.log('YouTubeコメントの取得を開始');
-        const response = await fetch('/api/youtube-comments');
-        
-        if (!response.ok) {
-          throw new Error(`YouTube API responded with status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        // コマンドを処理（あれば）
-        if (data.commands && Array.isArray(data.commands) && data.commands.length > 0) {
-          console.log(`${data.commands.length}件のコマンドを検出しました:`, data.commands);
-          setIsProcessingCommand(true);
-          
-          // 各コマンドを処理
-          for (const cmd of data.commands) {
-            await processCommand(cmd);
-          }
-          
-          setIsProcessingCommand(false);
-        }
-      } catch (error) {
-        console.error('YouTubeコメント取得エラー:', error);
-        toast({
-          title: 'YouTubeコメント取得エラー',
-          description: (error as Error).message,
-          variant: 'destructive',
-        });
-      }
-    };
-    
-    // コマンドをAPI経由で処理する関数
-    const processCommand = async (command: Command) => {
-      // 既に処理中のコマンドかチェック（二重実行防止）
-      if (processingCommandsRef.current.has(command.commentId)) {
-        console.log(`コマンドID ${command.commentId} は既に処理中のためスキップします`);
-        return;
-      }
-      
-      // 処理中としてマーク
-      processingCommandsRef.current.add(command.commentId);
-      
-      try {
-        console.log(`コマンド処理: ${command.command} by ${command.authorName}`);
-        
-        // プロフィール画像URLがあるかログ出力
-        if (command.profileImageUrl) {
-          console.log(`[Page] Command has profile image URL: ${command.profileImageUrl}`);
-        } else {
-          console.log(`[Page] Command has no profile image URL`);
-        }
-        
-        // コマンド実行APIをコール
-        const response = await fetch('/api/commands', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            command: command.command,
-            username: command.authorName,
-            authorId: command.authorId,
-            videoId: command.commentId.split('_')[0], // コメントIDからビデオID部分を抽出
-            taskName: command.taskName,
-            profileImageUrl: command.profileImageUrl // プロフィール画像URLを追加
-          }),
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Command API responded with status: ${response.status}`);
-        }
-        
-        const result = await response.json();
-        
-        if (result.success) {
-          console.log(`コマンド ${command.command} の処理成功:`, result);
-          
-          // デバッグ: データベース更新の確認
-          try {
-            console.log(`[Page] Checking database for updates after command ${command.command}...`);
-            const dbCheckResponse = await fetch('/api/debug/check-db?command=' + command.command + 
-              '&username=' + encodeURIComponent(command.authorName) + 
-              (command.profileImageUrl ? '&profileImageUrl=' + encodeURIComponent(command.profileImageUrl) : ''));
-            
-            if (dbCheckResponse.ok) {
-              const dbCheckResult = await dbCheckResponse.json();
-              console.log(`[Page] Database check result:`, dbCheckResult);
-            }
-          } catch (checkError) {
-            console.warn(`[Page] Error checking database:`, checkError);
-          }
-          
-          // 成功時に通知表示
-          if (command.command === 'work') {
-            toast({
-              title: `${command.authorName} が入室しました`,
-              description: `タスク: ${command.taskName || '未設定'}`,
-              variant: 'default',
-            });
-          } else if (command.command === 'finish') {
-            toast({
-              title: `${command.authorName} が退室しました`,
-              variant: 'default',
-            });
-          }
-        } else {
-          console.error(`コマンド ${command.command} の処理に失敗:`, result.error);
-          toast({
-            title: 'コマンド処理エラー',
-            description: result.error || '不明なエラーが発生しました',
-            variant: 'destructive',
-          });
-        }
-      } catch (error) {
-        console.error('コマンド処理中にエラーが発生:', error);
-        toast({
-          title: 'コマンド処理エラー',
-          description: (error as Error).message || 'サーバーとの通信中にエラーが発生しました',
-          variant: 'destructive',
-        });
-      } finally {
-        // 処理が完了したらセットから削除（一定時間後）
-        setTimeout(() => {
-          processingCommandsRef.current.delete(command.commentId);
-        }, 10000); // 10秒後に削除
-      }
-    };
-    
-    // 初回実行
-    fetchYoutubeComments();
-    
-    // 定期的に実行 (10秒ごと)
-    const commentInterval = setInterval(fetchYoutubeComments, 10000);
-
-    return () => {
-      clearInterval(commentInterval);
-    };
-  }, []);
-
-  // フォーカスルームとチャットルームを分離
-  const focusRooms = rooms.filter(room => room.type === 'focus');
-  const chatRooms = rooms.filter(room => room.type === 'chat' || !room.type);
-
-  // 接続状態に応じたメッセージを表示
-  const renderConnectionStatus = () => {
-    switch (connectionState) {
-      case 'connecting':
-        return (
-          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
-            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
-            <AlertTitle>接続中...</AlertTitle>
-            <AlertDescription>サーバーに接続しています。しばらくお待ちください。</AlertDescription>
-          </Alert>
-        );
-      case 'reconnecting':
-        return (
-          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
-            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
-            <AlertTitle>再接続中...</AlertTitle>
-            <AlertDescription>
-              サーバーとの接続が切断されました。再接続を試みています。
-              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
-                今すぐ再接続
-              </Button>
-            </AlertDescription>
-          </Alert>
-        );
-      case 'error':
-        return (
-          <Alert variant="destructive" className="mb-4">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>接続エラー</AlertTitle>
-            <AlertDescription>
-              サーバーとの接続中にエラーが発生しました。
-              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
-                再接続する
-              </Button>
-            </AlertDescription>
-          </Alert>
-        );
-      case 'disconnected':
-        return (
-          <Alert className="mb-4 bg-gray-100 border-gray-200">
-            <WifiOff className="h-4 w-4 text-gray-500" />
-            <AlertTitle>切断されました</AlertTitle>
-            <AlertDescription>
-              サーバーとの接続が終了しました。
-              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
-                再接続する
-              </Button>
-            </AlertDescription>
-          </Alert>
-        );
-      default:
-        return null;
-    }
-  };
-
-  return (
-    <main className="min-h-screen bg-[#505762] pt-16"> {/* pt-16 はヘッダー分 */}
-      {/* ヘッダー */}
-      <Header />
-
-      {/* お知らせティッカー */}
-      <NotificationTicker notifications={notifications} />
-
-      {/* メインコンテンツ (pt をお知らせティッカーの高さ分追加) */}
-      <div className="container mx-auto px-4 py-4 pt-10"> {/* pt-10 = ticker height */}
-        {/* 接続状態表示 */}
-        {renderConnectionStatus()}
-
-        {/* 参加者情報 */}
-        <Card className="mb-4 bg-[#f2f2f2]/95 shadow-md">
-          <div className="p-4">
-            <h2 className="font-medium text-lg mb-2">現在の参加者</h2>
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <span>オンライン: {rooms.flatMap(room => room.seats?.filter(seat => seat.username) || []).length}人</span>
-              {isProcessingCommand && (
-                <span className="flex items-center text-sm text-blue-500">
-                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                  コマンド処理中...
-                </span>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">すべて</button>
-              <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">ルーム1</button>
-              <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">ルーム2</button>
-              <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">ルーム3</button>
-              <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">ルーム4</button>
-              <button className="px-3 py-1 bg-gray-200 rounded-full text-sm">ルーム5</button>
-            </div>
-          </div>
-        </Card>
-        
-        {/* フォーカスルーム */}
-        <div className="mb-4">
-          {!isLoading && rooms.length > 0 && rooms.some(room => room.seats && room.seats.length > 0) ? (
-            <FocusRoom
-              seats={rooms.flatMap(room => room.seats || [])}
-              roomId="focus-room"
-            />
-          ) : (
-            <div className="bg-[#f2f2f2]/95 rounded-lg p-8 text-center text-gray-600">
-              <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin text-gray-400" />
-              座席情報を読み込み中...
-            </div>
-          )}
-        </div>
-        
-        {/* BGM */}
-        <BGMPlayer />
-
-        {/* チャットルーム（非表示） */}
-        <div className="hidden">
-          {chatRooms.map(room => (
-            <Room key={room.id} room={room} />
-          ))}
-        </div>
-      </div>
-      
-      {/* フッター */}
-      <footer className="py-6 border-t border-white/10 text-white/70">
-        <div className="container mx-auto px-4 text-center text-sm">
-          <p>© 2023 focuscraft - プライバシー・ポリシー・利用規約</p>
-        </div>
-      </footer>
-    </main>
-  );
 }
 </file>
 
@@ -11643,6 +11121,303 @@ export default function UserCard({ user, roomId, position }: UserCardProps) {
       </div>
     </div>
   );
+}
+</file>
+
+<file path="lib/sseUtils.ts">
+import { Db } from 'mongodb';
+
+/**
+ * MongoDB から部屋と座席のデータを取得し、クライアント用にフォーマットする
+ * @param db MongoDB データベース接続
+ * @returns フォーマットされた部屋と座席のデータ
+ */
+export async function fetchRoomData(db: Db) {
+  console.log('[SSE:Utils] Fetching room data from MongoDB');
+  try {
+    // 接続チェック - pingコマンドで接続状態を確認
+    try {
+      await db.command({ ping: 1 });
+    } catch (pingError) {
+      console.warn('[SSE:Utils] MongoDB connection check failed:', pingError);
+      throw new Error('MongoDB connection not available');
+    }
+
+    // すべての座席を取得（部屋IDに関わらず）
+    const allSeats = await db.collection('seats').find().toArray();
+    console.log(`[SSE:Utils] Retrieved ${allSeats.length} total seats from database`);
+    
+    // プロフィール画像URLがある座席を探す
+    const seatsWithProfileImage = allSeats.filter(seat => seat.profileImageUrl);
+    if (seatsWithProfileImage.length > 0) {
+      console.log(`[SSE:Utils] Found ${seatsWithProfileImage.length} seats with profile images in database:`);
+      seatsWithProfileImage.forEach(seat => {
+        console.log(`[SSE:Utils] Seat with profile image in DB: ${seat.username}, URL: ${seat.profileImageUrl}, room_id: ${seat.room_id}`);
+      });
+    } else {
+      console.log(`[SSE:Utils] No seats with profile images found in database`);
+    }
+    
+    // すべての部屋を取得
+    const rooms = await db.collection('rooms').find().toArray();
+    console.log(`[SSE:Utils] Retrieved ${rooms.length} rooms`);
+    
+    // 部屋IDごとの座席数を集計
+    const seatsByRoomId = allSeats.reduce((acc, seat) => {
+      const roomId = seat.room_id || 'unassigned';
+      acc[roomId] = (acc[roomId] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    console.log('[SSE:Utils] Seats count by room_id:', seatsByRoomId);
+    
+    // 通常の処理
+    const seats = rooms.length > 0 ? allSeats : allSeats;
+    
+    // 最初の数件の生のシートデータをログに出力（デバッグ用）
+    if (seats.length > 0) {
+      console.log('[SSE:Utils] DEBUG - Raw seats data sample:');
+      seats.slice(0, 3).forEach((seat, index) => {
+        console.log(`Seat ${index}:`, JSON.stringify({
+          _id: seat._id.toString(),
+          username: seat.username,
+          profileImageUrl: seat.profileImageUrl,
+          room_id: seat.room_id,
+          position: seat.position,
+        }, null, 2));
+      });
+    }
+
+    // roomsが空の場合は、シートを直接配列の最初の要素として使用する
+    if (rooms.length === 0) {
+      console.log('[SSE:Utils] No rooms found, creating a default room with all seats');
+      // デフォルトの部屋タイプを設定
+      const defaultRoom = {
+        id: 'focus-room',
+        type: 'focus',
+        seats: seats.filter(seat => seat.username).map(seat => ({
+          id: seat._id.toString(),
+          username: seat.username,
+          task: seat.task,
+          enterTime: seat.enterTime,
+          autoExitScheduled: seat.autoExitScheduled,
+          profileImageUrl: seat.profileImageUrl,
+          timestamp: seat.timestamp
+        }))
+      };
+
+      // デフォルトルームに座席がない場合でも空配列を返す（seats.lengthが0でも問題ない）
+      console.log(`[SSE:Utils] Created default room with ${defaultRoom.seats.length} occupied seats`);
+
+      // 変換後のシートデータサンプルをログに出力
+      console.log('[SSE:Utils] DEBUG - Transformed default room seats sample:');
+      if (defaultRoom.seats.length > 0) {
+        defaultRoom.seats.slice(0, 3).forEach((seat, index) => {
+          console.log(`Transformed Seat ${index}:`, JSON.stringify(seat, null, 2));
+        });
+      }
+      
+      // プロフィール画像URLがある座席をログ出力
+      const transformedSeatsWithImage = defaultRoom.seats.filter(seat => seat.profileImageUrl);
+      if (transformedSeatsWithImage.length > 0) {
+        console.log(`[SSE:Utils] Found ${transformedSeatsWithImage.length} transformed seats with profile images in default room:`);
+        transformedSeatsWithImage.forEach(seat => {
+          console.log(`[SSE:Utils] Transformed seat with profile image: ${seat.username}, URL: ${seat.profileImageUrl}`);
+        });
+      }
+
+      return { rooms: [defaultRoom] };
+    }
+
+    // 部屋ごとに座席をマッピングする詳細ログ
+    console.log('[SSE:Utils] Mapping seats to rooms...');
+    rooms.forEach(room => {
+      const roomSeats = seats.filter(seat => seat.room_id === room._id);
+      console.log(`[SSE:Utils] Room ${room._id}: ${roomSeats.length} seats found`);
+      
+      // この部屋にプロフィール画像付きの座席があるか確認
+      const roomSeatsWithImages = roomSeats.filter(seat => seat.profileImageUrl);
+      if (roomSeatsWithImages.length > 0) {
+        console.log(`[SSE:Utils] Room ${room._id} has ${roomSeatsWithImages.length} seats with profile images`);
+      }
+    });
+
+    const roomsWithSeats = rooms.map(room => {
+      // この部屋の座席を取得
+      const roomSeats = seats
+        .filter(seat => seat.room_id === room._id)
+        .sort((a, b) => a.position - b.position);
+        
+      console.log(`[SSE:Utils] Processing room ${room._id} with ${roomSeats.length} seats`);
+      
+      // プロフィール画像URLがある座席をログ出力
+      const seatsWithImages = roomSeats.filter(seat => seat.profileImageUrl);
+      if (seatsWithImages.length > 0) {
+        console.log(`[SSE:Utils] Room ${room._id} has ${seatsWithImages.length} seats with profile images before transform`);
+      }
+      
+      // 座席データを変換
+      const transformedSeats = roomSeats.map(seat => ({
+        id: seat._id.toString(),
+        username: seat.username,
+        task: seat.task,
+        enterTime: seat.enterTime,
+        autoExitScheduled: seat.autoExitScheduled,
+        profileImageUrl: seat.profileImageUrl,
+        timestamp: seat.timestamp
+      }));
+      
+      // 変換後にプロフィール画像URLがある座席をログ出力
+      const transformedSeatsWithImages = transformedSeats.filter(seat => seat.profileImageUrl);
+      if (transformedSeatsWithImages.length > 0) {
+        console.log(`[SSE:Utils] Room ${room._id} has ${transformedSeatsWithImages.length} seats with profile images after transform`);
+        transformedSeatsWithImages.forEach(seat => {
+          console.log(`[SSE:Utils] Transformed seat with profile image: ${seat.username}, URL: ${seat.profileImageUrl}`);
+        });
+      }
+      
+      return {
+        id: room._id,
+        seats: transformedSeats
+      };
+    });
+
+    // 変換後のデータサンプルをログに出力
+    console.log('[SSE:Utils] DEBUG - Transformed rooms data sample:');
+    if (roomsWithSeats.length > 0 && roomsWithSeats[0].seats.length > 0) {
+      const sampleSeats = roomsWithSeats[0].seats.slice(0, 3);
+      console.log(`Room ${roomsWithSeats[0].id} sample seats:`, 
+        JSON.stringify(sampleSeats, null, 2));
+    }
+
+    console.log('[SSE:Utils] Room data formatted successfully');
+    // プロフィール画像URLの例をログに出力（デバッグ用）
+    if (seats.length > 0 && seats.some(seat => seat.profileImageUrl)) {
+      const exampleSeat = seats.find(seat => seat.profileImageUrl);
+      console.log(`[SSE:Utils] DEBUG - Example profile image URL: ${exampleSeat?.profileImageUrl}`);
+      
+      // JSON形式でログ出力
+      console.log('[SSE:Utils] DEBUG - Seat with profile image:', 
+        JSON.stringify({
+          _id: exampleSeat?._id.toString(),
+          username: exampleSeat?.username,
+          profileImageUrl: exampleSeat?.profileImageUrl,
+          room_id: exampleSeat?.room_id
+        }, null, 2));
+    } else {
+      console.log('[SSE:Utils] DEBUG - No profile image URLs found in seats data');
+    }
+    
+    // 最終的な結果にプロフィール画像URLがある座席があるか確認
+    let totalSeatsWithProfileImages = 0;
+    roomsWithSeats.forEach(room => {
+      const roomSeatsWithImages = room.seats.filter(seat => seat.profileImageUrl);
+      totalSeatsWithProfileImages += roomSeatsWithImages.length;
+    });
+    
+    if (totalSeatsWithProfileImages > 0) {
+      console.log(`[SSE:Utils] Final data has ${totalSeatsWithProfileImages} seats with profile images`);
+    } else {
+      console.log(`[SSE:Utils] Final data has NO seats with profile images`);
+    }
+    
+    return { rooms: roomsWithSeats };
+  } catch (error) {
+    console.error('[SSE:Utils] Error fetching room data:', error);
+    return { rooms: [], error: 'Failed to fetch data' };
+  }
+}
+
+/**
+ * 指数バックオフ付きの再接続試行回数とタイムアウトを計算する
+ * @param retryCount 現在の試行回数
+ * @param baseDelay 基本の待機時間（ミリ秒）
+ * @param maxDelay 最大待機時間（ミリ秒）
+ * @returns 次回待機時間（ミリ秒）
+ */
+export function calculateBackoff(retryCount: number, baseDelay: number = 1000, maxDelay: number = 30000): number {
+  // 指数バックオフ（2のべき乗）とランダム要素（ジッター）を加える
+  const exponentialDelay = Math.min(
+    maxDelay,
+    baseDelay * Math.pow(2, retryCount) * (1 + Math.random() * 0.2)
+  );
+  return Math.round(exponentialDelay);
+}
+
+/**
+ * システムメッセージをクライアントに送信するためのSSEメッセージを生成する
+ * @param message メッセージ内容
+ * @param type メッセージタイプ（info, warning, error など）
+ * @param id オプションのメッセージID
+ * @returns フォーマットされたSSEメッセージ
+ */
+export function createSystemMessage(message: string, type: 'info' | 'warning' | 'error' = 'info', id?: string): string {
+  const payload: { message: string; type: string; timestamp: string; id?: string } = {
+    message,
+    type,
+    timestamp: new Date().toISOString(),
+  };
+  if (id) {
+    payload.id = id;
+  }
+  return `event: system-message\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+/**
+ * MongoDB Change Streamの接続状態を追跡するためのクラス
+ * グローバルな状態を管理し、複数のSSE接続間で自動退室チェックの重複を防ぐ
+ */
+export class ChangeStreamManager {
+  private static instance: ChangeStreamManager;
+  private activeConnections: number = 0;
+
+  private constructor() {}
+
+  public static getInstance(): ChangeStreamManager {
+    if (!ChangeStreamManager.instance) {
+      ChangeStreamManager.instance = new ChangeStreamManager();
+    }
+    return ChangeStreamManager.instance;
+  }
+
+  /**
+   * 新しいSSE接続を登録する
+   * @returns 登録後のアクティブ接続数
+   */
+  public registerConnection(): number {
+    this.activeConnections++;
+    console.log(`[SSE:Manager] New connection registered. Active connections: ${this.activeConnections}`);
+    // 最初の接続が登録されたことを示すフラグを返す
+    return this.activeConnections;
+  }
+
+  /**
+   * SSE接続の終了を登録する
+   * @returns 残りのアクティブ接続数
+   */
+  public unregisterConnection(): number {
+    this.activeConnections = Math.max(0, this.activeConnections - 1);
+    console.log(`[SSE:Manager] Connection unregistered. Active connections: ${this.activeConnections}`);
+    return this.activeConnections;
+  }
+
+  /**
+   * 現在のアクティブな接続数を取得する
+   * @returns アクティブな接続数
+   */
+  public getActiveConnections(): number {
+    return this.activeConnections;
+  }
+
+  /**
+   * このインスタンスで自動退室チェックを開始すべきか判断する
+   * (通常、最初の接続時にtrueを返す)
+   * @returns 開始すべきならtrue
+   */
+  public shouldStartAutoExitCheckOnRegister(): boolean {
+    // activeConnectionsがインクリメントされた直後に呼ばれる想定
+    return this.activeConnections === 1;
+  }
 }
 </file>
 
@@ -12286,6 +12061,940 @@ const nextConfig = {
 module.exports = nextConfig;
 </file>
 
+<file path="app/api/sse/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+import { checkAndProcessAutoExit } from '@/lib/autoExit';
+import { fetchRoomData, calculateBackoff, createSystemMessage, ChangeStreamManager } from '@/lib/sseUtils';
+import { ChangeStream, ChangeStreamDocument, Db, MongoClient } from 'mongodb';
+
+export const dynamic = 'force-dynamic';
+
+// --- Helper functions moved outside GET handler ---
+
+// seats Change Stream 設定ヘルパー関数
+async function setupSeatsChangeStream(
+    db: Db,
+    manager: ChangeStreamManager,
+    controller: ReadableStreamDefaultController<any>,
+    checkAutoExit: () => Promise<void>,
+    // Variables from GET handler scope passed by reference or as callbacks
+    getSeatsChangeStream: () => ChangeStream | null,
+    setSeatsChangeStream: (stream: ChangeStream | null) => void,
+    getAutoExitIntervalId: () => NodeJS.Timeout | null,
+    setAutoExitIntervalId: (id: NodeJS.Timeout | null) => void,
+    getChangeStreamRetryCount: () => number,
+    setChangeStreamRetryCount: (count: number) => void,
+    incrementChangeStreamRetryCount: () => number,
+    isControllerClosed: () => boolean,
+    setupChangeStreams: () => Promise<void> // Function to retry setting up both streams
+) {
+    try {
+        const currentStream = getSeatsChangeStream();
+        if (currentStream) {
+           await currentStream.close().catch((err: Error) => console.error('[SSE Helper] Error closing previous seats change stream:', err));
+           setSeatsChangeStream(null); // Clear reference
+        }
+
+        console.log('[SSE Helper] Setting up MongoDB seats change stream');
+        const newStream = db.collection('seats').watch([
+          // Optionally add pipeline stages here if needed
+          // e.g., { $match: { 'operationType': { $in: ['insert', 'update', 'replace', 'delete'] } } }
+        ]);
+        setSeatsChangeStream(newStream); // Store the new stream reference
+        console.log('[SSE Helper] Seats change stream initialized');
+
+        // --- 自動退室チェックの開始ロジック ---
+        // このインスタンスで、かつ最初の接続の場合のみインターバルを開始する
+        if (manager.shouldStartAutoExitCheckOnRegister() && !getAutoExitIntervalId()) {
+          console.log('[SSE Helper] Starting auto-exit check interval for this instance.');
+          const newIntervalId = setInterval(checkAutoExit, 60000); // 1分ごと
+          setAutoExitIntervalId(newIntervalId);
+        } else if (getAutoExitIntervalId()) {
+           console.log('[SSE Helper] Auto-exit check interval is already running for this connection.');
+        } else {
+          console.log('[SSE Helper] Auto-exit check interval not started (not the first connection for this instance or already running).');
+        }
+        // --- ここまで ---
+
+        newStream.on('change', async (changeEvent: ChangeStreamDocument) => {
+          if (isControllerClosed()) {
+            console.log('[SSE Helper] Controller is already closed, ignoring change event');
+            return;
+          }
+          console.log('[SSE Helper] Change detected in seats collection:', JSON.stringify(changeEvent.operationType));
+          try {
+            console.log('[SSE Helper] Fetching updated data after change');
+            const data = await fetchRoomData(db); // db is guaranteed non-null here
+            console.log('[SSE Helper] Sending updated data to client');
+            if (!isControllerClosed()) {
+                controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
+            }
+          } catch (error) {
+            console.error('[SSE Helper] Error processing change stream update:', error);
+            if (!isControllerClosed()) {
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
+              controller.enqueue(new TextEncoder().encode(
+                createSystemMessage('データ更新中にエラーが発生しました', 'error')
+              ));
+            }
+          }
+        });
+
+        newStream.on('error', async (error: Error) => {
+          console.error('[SSE Helper] Seats change stream error:', error.message, error.stack);
+          if (!isControllerClosed()) {
+            controller.enqueue(new TextEncoder().encode(
+              createSystemMessage('サーバーとの接続に問題が発生しました。', 'warning')
+            ));
+          }
+
+          console.log('[SSE Helper] Closing seats change stream due to error');
+          const currentStreamOnError = getSeatsChangeStream();
+          if (currentStreamOnError) {
+            await currentStreamOnError.close().catch((err: Error) => console.error('[SSE Helper] Error closing seats change stream on error:', err));
+            setSeatsChangeStream(null); // Clear reference after closing
+          }
+          const currentIntervalOnError = getAutoExitIntervalId();
+          if (currentIntervalOnError) {
+              clearInterval(currentIntervalOnError);
+              setAutoExitIntervalId(null);
+              console.log('[SSE Helper] Cleared auto-exit interval due to seats stream error.');
+          }
+
+          // リトライしない場合のエラーメッセージ
+          if (!isControllerClosed()) {
+              console.error('[SSE Helper] Change stream error occurred. Auto-reconnect disabled.');
+              controller.enqueue(new TextEncoder().encode(
+                createSystemMessage('サーバーとの接続でエラーが発生しました。自動再接続は行われません。ページを再読み込みしてください。', 'error')
+              ));
+              // ★ エラー発生時にストリームを閉じる
+              try {
+                 controller.close();
+                 console.log('[SSE Helper] Controller closed due to seats stream error.');
+              } catch (e) {
+                 console.error('[SSE Helper] Error closing controller after seats stream error:', e);
+              }
+          }
+        });
+      } catch (setupError) {
+        console.error('[SSE Helper] Error setting up seats change stream:', setupError);
+        if (!isControllerClosed()) {
+            controller.enqueue(new TextEncoder().encode(
+                createSystemMessage('座席データのストリーム監視設定に失敗しました。', 'error')
+            ));
+        }
+        throw setupError; // エラーを上に伝播させる
+      }
+}
+
+// notifications Change Stream 設定ヘルパー関数
+async function setupNotificationsChangeStream(
+    db: Db,
+    controller: ReadableStreamDefaultController<any>,
+    // Variables from GET handler scope
+    getNotificationsChangeStream: () => ChangeStream | null,
+    setNotificationsChangeStream: (stream: ChangeStream | null) => void,
+    isControllerClosed: () => boolean,
+    setupStreamsFn: () => Promise<void> // Function to re-setup *both* streams
+) {
+    try {
+        const currentStream = getNotificationsChangeStream();
+        if (currentStream) {
+          await currentStream.close().catch((err: Error) =>
+            console.error('[SSE Helper] Error closing previous notifications change stream:', err));
+          setNotificationsChangeStream(null);
+        }
+
+        console.log('[SSE Helper] Setting up MongoDB notifications change stream');
+        const newStream = db.collection('announcements').watch([{ $match: { operationType: 'insert' } }]);
+        setNotificationsChangeStream(newStream);
+        console.log('[SSE Helper] Announcements change stream initialized');
+
+        newStream.on('change', async (changeEvent: ChangeStreamDocument<any>) => {
+          if (isControllerClosed()) {
+            console.log('[SSE Helper] Controller is already closed, ignoring announcement change event');
+            return;
+          }
+
+          if (changeEvent.operationType === 'insert') {
+            try {
+              const announcement = changeEvent.fullDocument;
+              if (announcement) {
+                console.log('[SSE Helper] New announcement detected:', announcement.message);
+                if (!isControllerClosed()) {
+                  controller.enqueue(new TextEncoder().encode(
+                    createSystemMessage(
+                      `[お知らせ] ${announcement.message}`,
+                      'info',
+                      announcement._id?.toString()
+                    )
+                  ));
+                   console.log('[SSE Helper] Sent announcement system message.');
+                }
+              }
+            } catch (error) {
+              console.error('[SSE Helper] Error processing announcement change:', error);
+            }
+          }
+        });
+
+        newStream.on('error', async (error: Error) => {
+          console.error('[SSE Helper] Announcements change stream error:', error.message, error.stack);
+
+           const currentStreamOnError = getNotificationsChangeStream();
+          if (currentStreamOnError) {
+            await currentStreamOnError.close().catch((err: Error) =>
+              console.error('[SSE Helper] Error closing announcements change stream on error:', err));
+            setNotificationsChangeStream(null);
+          }
+
+          if (!isControllerClosed()) {
+             console.warn('[SSE Helper] Announcements stream encountered an error. Relying on seats stream error handling for reconnection.');
+          }
+        });
+      } catch (setupError) {
+        console.error('[SSE Helper] Error setting up announcements change stream:', setupError);
+         if (!isControllerClosed()) {
+            controller.enqueue(new TextEncoder().encode(
+                createSystemMessage('お知らせデータのストリーム監視設定に失敗しました。', 'error')
+            ));
+        }
+        throw setupError;
+      }
+}
+
+
+export async function GET() {
+  console.log('[SSE] GET handler entered');
+
+  const encoder = new TextEncoder();
+  // --- Variables scoped to the GET handler ---
+  let client: MongoClient | null = null; // Use MongoClient type
+  let db: Db | null = null;
+  let seatsChangeStream: ChangeStream | null = null;
+  let notificationsChangeStream: ChangeStream | null = null;
+  let autoExitIntervalId: NodeJS.Timeout | null = null;
+  let keepAliveIntervalId: NodeJS.Timeout | null = null; // Added for keep-alive
+  let changeStreamRetryCount = 0;
+  const manager = ChangeStreamManager.getInstance();
+  let isControllerClosed = false; // Add flag
+
+  // --- Accessor/Mutator functions for scoped variables ---
+  const getSeatsChangeStream = () => seatsChangeStream;
+  const setSeatsChangeStream = (stream: ChangeStream | null) => { seatsChangeStream = stream; };
+  const getNotificationsChangeStream = () => notificationsChangeStream;
+  const setNotificationsChangeStream = (stream: ChangeStream | null) => { notificationsChangeStream = stream; };
+  const getAutoExitIntervalId = () => autoExitIntervalId;
+  const setAutoExitIntervalId = (id: NodeJS.Timeout | null) => { autoExitIntervalId = id; };
+  const getChangeStreamRetryCount = () => changeStreamRetryCount;
+  const setChangeStreamRetryCount = (count: number) => { changeStreamRetryCount = count; };
+  const incrementChangeStreamRetryCount = () => { return ++changeStreamRetryCount; };
+  const isControllerClosedFn = () => isControllerClosed;
+
+  // --- Cleanup function --- (defined before stream to be accessible)
+  const cleanupResources = () => {
+    console.log('[SSE Cleanup] Cleaning up resources...'); // ★ Log cleanup start
+    isControllerClosed = true; // Set flag immediately
+    if (keepAliveIntervalId) {
+      clearInterval(keepAliveIntervalId);
+      keepAliveIntervalId = null;
+      console.log('[SSE Cleanup] Cleared keep-alive interval.');
+    }
+    if (autoExitIntervalId) {
+      clearInterval(autoExitIntervalId);
+      setAutoExitIntervalId(null); // Use the setter
+      console.log('[SSE Cleanup] Cleared auto-exit interval.');
+    }
+    // Close change streams safely
+    const closePromises = [];
+    const currentSeatsStream = getSeatsChangeStream();
+    if (currentSeatsStream) {
+        console.log('[SSE Cleanup] Closing seats change stream...');
+        closePromises.push(currentSeatsStream.close().catch((err: Error) => console.error('[SSE Cleanup] Error closing seats stream:', err)));
+        setSeatsChangeStream(null); // Clear reference
+    }
+    const currentNotificationsStream = getNotificationsChangeStream();
+     if (currentNotificationsStream) {
+        console.log('[SSE Cleanup] Closing notifications change stream...');
+        closePromises.push(currentNotificationsStream.close().catch((err: Error) => console.error('[SSE Cleanup] Error closing notifications stream:', err)));
+        setNotificationsChangeStream(null); // Clear reference
+    }
+
+    // 重要な修正: MongoDB clientは閉じない
+    // デベロップモードでは共有クライアントを使用しているため
+    // ここでクライアントを閉じると他のSSE接続で問題が発生する
+    Promise.all(closePromises).then(() => {
+        console.log('[SSE Cleanup] All change streams closed.');
+        // ★★★ 以下のクライアント終了コードを削除 ★★★
+        // if (client) {
+        //     console.log('[SSE Cleanup] Closing MongoDB client connection...');
+        //     client.close().then(() => {
+        //         console.log('[SSE Cleanup] MongoDB client connection closed.');
+        //         client = null;
+        //         db = null;
+        //     }).catch((err: Error) => console.error('[SSE Cleanup] Error closing MongoDB client:', err));
+        // }
+        
+        // 代わりに参照のみをクリア
+        client = null;
+        db = null;
+        console.log('[SSE Cleanup] MongoDB client references cleared (connection maintained for other streams).');
+    });
+
+    manager.unregisterConnection();
+    console.log('[SSE Cleanup] Resources cleaned up.'); // ★ Log cleanup end
+  };
+
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      console.log('[SSE] Stream started'); // ★ Log stream start
+      manager.registerConnection();
+
+      const setupStreams = async () => {
+        // Reset retry count when attempting setup
+        // setChangeStreamRetryCount(0); // <--- この行もコメントアウト
+        console.log('[SSE Setup] Attempting to setup change streams...');
+        try {
+          client = await clientPromise;
+          
+          // 接続状態を確認（修正版）
+          try {
+            // サーバーに軽量なpingコマンドを送信して接続状態を確認
+            await client.db('admin').command({ ping: 1 });
+            console.log('[SSE Setup] MongoDB connection verified by ping');
+          } catch (pingError) {
+            console.log('[SSE Setup] MongoDB client not responding to ping. Attempting to reconnect...');
+            // clientPromiseを再取得して接続を確保
+            try {
+              client = await clientPromise;
+              await client.db('admin').command({ ping: 1 });
+            } catch (reconnectError) {
+              console.error('[SSE Setup] Failed to reconnect to MongoDB:', reconnectError);
+              throw new Error('Failed to establish MongoDB connection after retry');
+            }
+          }
+          
+          db = client.db('coworking');
+          console.log('[SSE Setup] MongoDB connected');
+
+          // Setup both streams concurrently (or sequentially if needed)
+          await Promise.all([
+            setupSeatsChangeStream(db, manager, controller, checkAutoExit, getSeatsChangeStream, setSeatsChangeStream, getAutoExitIntervalId, setAutoExitIntervalId, getChangeStreamRetryCount, setChangeStreamRetryCount, incrementChangeStreamRetryCount, isControllerClosedFn, setupStreams),
+            setupNotificationsChangeStream(db, controller, getNotificationsChangeStream, setNotificationsChangeStream, isControllerClosedFn, setupStreams)
+          ]);
+          console.log('[SSE Setup] Both change streams setup successfully');
+
+          // --- Initial Data Fetch and Send ---
+          console.log('[SSE Setup] Fetching initial room data...'); // ★ Log initial fetch
+          try {
+            const initialData = await fetchRoomData(db);
+            const initialDataString = `data: ${JSON.stringify(initialData)}\n\n`;
+            console.log('[SSE Setup] Sending initial data to client:', JSON.stringify(initialData).substring(0, 100) + '...'); // ★ Log initial send (limit length)
+            if (!isControllerClosed) { // Check flag before enqueue
+                controller.enqueue(encoder.encode(initialDataString));
+                console.log('[SSE Setup] Initial data enqueued.'); // ★ Log enqueue success
+            } else {
+                console.warn('[SSE Setup] Controller closed before initial data could be sent.'); // ★ Log if closed
+            }
+          } catch (fetchError) {
+              console.error('[SSE Setup] Error fetching or sending initial data:', fetchError);
+              if (!isControllerClosed) {
+                  controller.enqueue(encoder.encode(createSystemMessage('初期データの取得に失敗しました。', 'error')));
+                  // ★ 初期データ取得失敗時もストリームを閉じる
+                  try {
+                     controller.close();
+                     console.log('[SSE Setup] Controller closed due to initial data fetch error.');
+                  } catch (e) {
+                     console.error('[SSE Setup] Error closing controller after initial data fetch error:', e);
+                  }
+              }
+          }
+          // --- End Initial Data ---
+
+        } catch (error) {
+          console.error('[SSE Setup] Error setting up streams:', error);
+          if (!isControllerClosed) { // Check flag before enqueue
+            controller.enqueue(encoder.encode(createSystemMessage('サーバー接続中にエラーが発生しました。', 'error')));
+            // ★ ストリーム設定失敗時もストリームを閉じる
+            try {
+               controller.close();
+               console.log('[SSE Setup] Controller closed due to stream setup error.');
+            } catch (e) {
+               console.error('[SSE Setup] Error closing controller after stream setup error:', e);
+            }
+          }
+        }
+      };
+
+      const checkAutoExit = async () => {
+         if (isControllerClosed) return; // Don't run if closed
+         console.log('[SSE AutoExit] Starting auto-exit check...');
+         try {
+           if (!db) {
+             console.warn('[SSE AutoExit] DB not available, attempting to connect');
+             try {
+               client = await clientPromise;
+               db = client.db('coworking');
+             } catch (connectError) {
+               console.error('[SSE AutoExit] Failed to reconnect DB for auto-exit check:', connectError);
+               return; // Skip check if DB connection fails
+             }
+           }
+           const result = await checkAndProcessAutoExit(db);
+           if (result && result.processedCount > 0) {
+             console.log(`[SSE AutoExit] Processed ${result.processedCount} auto-exits. Fetching updated data...`);
+             // Auto-exitが発生したらデータを再取得して送信
+             const updatedData = await fetchRoomData(db);
+             if (!isControllerClosed) { // Check flag
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(updatedData)}\n\n`));
+                console.log('[SSE AutoExit] Sent updated data after auto-exit.');
+             }
+           } else {
+               // console.log('[SSE AutoExit] No users processed for auto-exit.');
+           }
+         } catch (error) {
+           console.error('[SSE AutoExit] Error during auto-exit check:', error);
+           if (!isControllerClosed) { // Check flag
+               controller.enqueue(encoder.encode(createSystemMessage('自動退室処理中にエラーが発生しました。', 'warning')));
+           }
+         }
+       };
+
+      // Initial setup
+      await setupStreams();
+
+      // Keep-alive ping (every 30 seconds)
+      keepAliveIntervalId = setInterval(() => {
+        if (isControllerClosed) {
+            clearInterval(keepAliveIntervalId!);
+            keepAliveIntervalId = null;
+            return;
+        }
+        console.log('[SSE] Sending keep-alive ping');
+        controller.enqueue(encoder.encode(': keep alive\n\n'));
+      }, 30000); // Send comment every 30s to prevent timeout
+
+    },
+    cancel(reason) {
+      console.log('[SSE] Stream cancelled. Reason:', reason); // ★ Log cancellation
+      // isControllerClosed = true; // Set flag when cancelled - Moved to cleanupResources start
+      cleanupResources();
+    }
+  });
+
+
+    return new NextResponse(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
+}
+</file>
+
+<file path="app/page.tsx">
+"use client";
+
+import { useEffect, useState, useRef, useCallback } from "react";
+import Room from "@/components/Room";
+import { Card } from "@/components/ui/card";
+import FocusRoom from "@/components/FocusRoom";
+import Header from "@/components/Header";
+import BGMPlayer from "@/components/BGMPlayer";
+import NotificationTicker, { Notification } from "@/components/NotificationTicker";
+import AnnouncementsTicker from "@/components/AnnouncementsTicker";
+import { toast } from "@/hooks/use-toast";
+import { useSeatData, RoomData, Seat } from "@/hooks/use-seat-data";
+import { useSSE, SystemMessage } from "@/hooks/use-sse";
+import { useYouTubeComments } from "@/hooks/use-youtube-comments";
+import { youtubeService } from "@/lib/api/services/youtubeService";
+import { SSEData } from "@/lib/api/sse/sseTypes";
+import { AlertCircle, WifiOff, Loader2 } from "lucide-react";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Command } from "@/lib/types";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+// 通知の最大保持数
+const MAX_NOTIFICATIONS = 20;
+
+// SSEデータの型
+// interface SSEData {
+//   rooms: RoomData[];
+//   error?: string;
+// }
+
+// システムメッセージの型
+// interface SystemMessagePayload {
+//   message: string;
+//   type: 'info' | 'warning' | 'error';
+//   timestamp: string; // ISO String
+//   id?: string; // バックエンドでユニークIDを付与するのが望ましい
+// }
+
+export default function Home() {
+
+  
+  // 独自のSSE接続を使用
+  const [rooms, setRooms] = useState<RoomData[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [isMounted, setIsMounted] = useState(false);
+
+  // コマンド処理の状態管理を提供するuseYouTubeCommentsフックを使用
+  const processingCommandsRef = useRef<Set<string>>(new Set());
+
+  // お知らせメッセージ処理
+  const handleSystemMessage = useCallback((messagePayload: SystemMessage) => {
+    console.log('[Page] System Message Received:', messagePayload);
+    const newNotification: Notification = {
+      // バックエンドでIDが付与されていない場合、クライアントで生成
+      id: messagePayload.id || `${Date.now()}-${Math.random()}`,
+      message: messagePayload.message,
+      timestamp: new Date(messagePayload.timestamp).getTime(),
+      type: messagePayload.type,
+    };
+
+    setNotifications(prev => {
+      const updated = [newNotification, ...prev];
+      return updated.slice(0, MAX_NOTIFICATIONS); // 最大件数制限
+    });
+
+    // トースト通知も表示
+    toast({
+      title: messagePayload.type === 'error' ? 'エラー' : 
+             messagePayload.type === 'warning' ? '警告' : 'お知らせ',
+      description: messagePayload.message,
+      variant: messagePayload.type === 'error' ? 'destructive' : 'default',
+    });
+  }, []);
+
+  // 座席データメッセージ処理
+  const handleSeatDataMessage = useCallback((data: SSEData) => {
+    console.log('[Page] handleSeatDataMessage called. Received data:', JSON.stringify(data, null, 2));
+
+    if (data.rooms && Array.isArray(data.rooms)) {
+      console.log(`[Page] Received ${data.rooms.length} rooms from SSE. Updating state...`);
+      setRooms(data.rooms);
+    } else if (data.error) {
+      console.error('[Page] Error in SSE data:', data.error);
+      // エラー通知はお知らせティッカーかトーストで表示
+      handleSystemMessage({ 
+        message: data.error, 
+        type: 'error', 
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.warn('[Page] Received unexpected SSE data format:', data);
+    }
+  }, [handleSystemMessage]);
+
+  // SSE接続フック
+  const {
+    connectionState,
+    connect: refreshData,
+    disconnect,
+  } = useSSE<SSEData>({
+    endpoint: '/api/sse',
+    onMessage: handleSeatDataMessage, // 座席データ用ハンドラ
+    onSystemMessage: handleSystemMessage, // お知らせ用ハンドラ
+    onConnect: () => {
+      console.log('[Page] SSE connection established');
+    },
+    onDisconnect: () => {
+      console.log('[Page] SSE connection closed');
+    },
+    onError: (error) => {
+      console.error('[Page] SSE connection error:', error);
+    },
+    maxRetries: 5, // 最大再試行回数
+  });
+  console.log('[Page] Current connection state:', connectionState); // 常に最新の接続状態をログ出力
+
+  // コマンド処理ハンドラ
+  const handleCommands = useCallback(async (commands: Command[]) => {
+    console.log(`${commands.length}件のコマンドを処理します:`, commands);
+    
+    // 各コマンドを処理
+    for (const cmd of commands) {
+      await processCommand(cmd);
+    }
+  }, []);
+
+  // YouTubeコメント取得とコマンド処理フック
+  const { isProcessingCommand } = useYouTubeComments({
+    enabled: isMounted,
+    onCommandsDetected: handleCommands
+  });
+
+  // 個々のコマンドを処理する関数
+  const processCommand = async (command: Command) => {
+    // 既に処理中のコマンドかチェック（二重実行防止）
+    if (processingCommandsRef.current.has(command.commentId)) {
+      console.log(`コマンドID ${command.commentId} は既に処理中のためスキップします`);
+      return;
+    }
+    
+    // 処理中としてマーク
+    processingCommandsRef.current.add(command.commentId);
+    
+    try {
+      console.log(`コマンド処理: ${command.command} by ${command.authorName}`);
+      
+      // プロフィール画像URLがあるかログ出力
+      if (command.profileImageUrl) {
+        console.log(`[Page] Command has profile image URL: ${command.profileImageUrl}`);
+      } else {
+        console.log(`[Page] Command has no profile image URL`);
+      }
+      
+      // コマンド実行APIをコール（サービスクラス経由）
+      const result = await youtubeService.executeCommand({
+        command: command.command,
+        username: command.authorName,
+        authorId: command.authorId,
+        videoId: command.commentId.split('_')[0], // コメントIDからビデオID部分を抽出
+        taskName: command.taskName,
+        profileImageUrl: command.profileImageUrl // プロフィール画像URLを追加
+      });
+      
+      if (result.success) {
+        console.log(`コマンド ${command.command} の処理成功:`, result);
+        
+        // デバッグ: データベース更新の確認
+        try {
+          console.log(`[Page] Checking database for updates after command ${command.command}...`);
+          const dbCheckResponse = await fetch('/api/debug/check-db?command=' + command.command + 
+            '&username=' + encodeURIComponent(command.authorName) + 
+            (command.profileImageUrl ? '&profileImageUrl=' + encodeURIComponent(command.profileImageUrl) : ''));
+          
+          if (dbCheckResponse.ok) {
+            const dbCheckResult = await dbCheckResponse.json();
+            console.log(`[Page] Database check result:`, dbCheckResult);
+          }
+        } catch (checkError) {
+          console.warn(`[Page] Error checking database:`, checkError);
+        }
+        
+        // 成功時に通知表示
+        if (command.command === 'work') {
+          handleSystemMessage({
+            id: `work-${command.commentId}`,
+            message: `${command.authorName} が入室しました (タスク: ${command.taskName || '未設定'})`,
+            type: 'info',
+            timestamp: new Date().toISOString(),
+          });
+        } else if (command.command === 'finish') {
+          handleSystemMessage({
+            id: `finish-${command.commentId}`,
+            message: `${command.authorName} が退室しました`,
+            type: 'info',
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } else {
+        console.error(`コマンド ${command.command} の処理に失敗:`, result.error);
+        toast({
+          title: 'コマンド処理エラー',
+          description: result.error || '不明なエラーが発生しました',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('コマンド処理中にエラーが発生:', error);
+      toast({
+        title: 'コマンド処理エラー',
+        description: (error as Error).message || 'サーバーとの通信中にエラーが発生しました',
+        variant: 'destructive',
+      });
+    } finally {
+      // 処理が完了したらセットから削除（一定時間後）
+      setTimeout(() => {
+        processingCommandsRef.current.delete(command.commentId);
+      }, 10000); // 10秒後に削除
+    }
+  };
+
+  // isLoading状態の計算 - 修正：部屋データが存在する場合はロード中とみなさない
+  const isLoading = (connectionState === 'connecting' || connectionState === 'reconnecting') && rooms.length === 0;
+  
+  // デバッグログ追加
+  useEffect(() => {
+    console.log(`[Page] SSE connection state changed to: ${connectionState}, isLoading: ${isLoading}, rooms: ${rooms.length}`);
+    // 接続状態が変更されたら強制的に再レンダリングをトリガーする
+    if (connectionState === 'connected' && rooms.length === 0) {
+      // 接続済みだがデータがない場合は、データ更新を試みる
+      refreshData();
+    }
+  }, [isLoading, rooms.length, refreshData]);
+
+  // マウント状態を設定する useEffect
+  useEffect(() => {
+    console.log('[Page] Component mounted. Setting isMounted to true');
+    setIsMounted(true);
+  }, []);
+
+  // ★ SSE接続用の useEffect (isMounted で制御)
+  useEffect(() => {
+    if (isMounted) {
+      console.log("[Page] Attempting to connect SSE after mount. Current state:", {
+        connectionState,
+        isLoading,
+        roomsLength: rooms.length
+      });
+      
+      // 接続用リクエストを一度だけ行う
+      const connectSSE = () => {
+        console.log("[Page] Executing SSE connect request");
+        refreshData();
+      };
+      
+      connectSSE();
+      
+      // コンポーネントのアンマウント時に切断
+      return () => {
+        console.log("[Page] Disconnecting SSE on cleanup...");
+        disconnect();
+      };
+    }
+  }, [isMounted]); // isMounted のみに依存
+
+  // フォーカスルームとチャットルームを分離
+  const focusRooms = rooms.filter(room => room.type === 'focus');
+  const chatRooms = rooms.filter(room => room.type === 'chat' || !room.type);
+
+  // 接続状態に応じたメッセージを表示
+  const renderConnectionStatus = () => {
+    console.log(`[Page] Rendering connection status for state: ${connectionState}`); // ログ追加
+
+    // 接続ステータスごとの表示を実装
+    switch (connectionState) {
+      case 'connecting':
+        return (
+          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+            <AlertTitle>接続中...</AlertTitle>
+            <AlertDescription>
+              サーバーに接続しています。しばらくお待ちください。
+              <div className="text-xs mt-1 text-gray-500">
+                接続状態: {connectionState}, ロード中: {String(isLoading)}, 部屋数: {rooms.length}
+              </div>
+            </AlertDescription>
+          </Alert>
+        );
+      case 'reconnecting':
+        return (
+          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+            <AlertTitle>再接続中...</AlertTitle>
+            <AlertDescription>
+              サーバーとの接続が切断されました。再接続を試みています。
+              <div className="text-xs mt-1 text-gray-500">
+                接続状態: {connectionState}, ロード中: {String(isLoading)}, 部屋数: {rooms.length}
+              </div>
+              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
+                今すぐ再接続
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      case 'error':
+        return (
+          <Alert variant="destructive" className="mb-4">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>接続エラー</AlertTitle>
+            <AlertDescription>
+              サーバーとの接続中にエラーが発生しました。
+              <div className="text-xs mt-1 text-gray-500">
+                接続状態: {connectionState}, ロード中: {String(isLoading)}, 部屋数: {rooms.length}
+              </div>
+              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
+                再接続する
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      case 'disconnected':
+        return (
+          <Alert className="mb-4 bg-gray-100 border-gray-200">
+            <WifiOff className="h-4 w-4 text-gray-500" />
+            <AlertTitle>切断されました</AlertTitle>
+            <AlertDescription>
+              サーバーとの接続が終了しました。
+              <div className="text-xs mt-1 text-gray-500">
+                接続状態: {connectionState}, ロード中: {String(isLoading)}, 部屋数: {rooms.length}
+              </div>
+              <Button variant="outline" size="sm" className="ml-2 mt-2" onClick={refreshData}>
+                再接続する
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      case 'connected':
+        // 接続済みなら何も表示しない、もしくは小さな成功メッセージを表示
+        if (rooms.length === 0) {
+          return (
+            <Alert className="mb-4 bg-blue-50 border-blue-200">
+              <AlertCircle className="h-4 w-4 text-blue-500" />
+              <AlertTitle>接続済み（データなし）</AlertTitle>
+              <AlertDescription>
+                サーバーに接続しましたが、部屋データが見つかりません。
+                <div className="text-xs mt-1 text-gray-500">
+                  接続状態: {connectionState}, ロード中: {String(isLoading)}, 部屋数: {rooms.length}
+                </div>
+              </AlertDescription>
+            </Alert>
+          );
+        }
+        return null;
+      default:
+        // デフォルトケースも追加して、万が一の場合に対応
+        console.warn(`[Page] Unknown connection state: ${connectionState}`);
+        return (
+          <Alert className="mb-4 bg-gray-100 border-gray-200">
+            <AlertCircle className="h-4 w-4 text-gray-500" />
+            <AlertTitle>不明な接続状態</AlertTitle>
+            <AlertDescription>
+              接続状態: {connectionState || 'undefined'}, ロード中: {String(isLoading)}, 部屋数: {rooms.length}
+            </AlertDescription>
+          </Alert>
+        );
+    }
+  };
+
+  return (
+    <main className="min-h-screen bg-[#505762] pt-16"> {/* pt-16 はヘッダー分 */}
+      {/* ヘッダー */}
+      <Header />
+
+      {/* メインコンテンツ (pt を削除) */}
+      <div className="container mx-auto px-4 py-4"> {/* pt-10 を削除 */}
+        {/* 接続状態表示 - 常に表示 */}
+        <div className="connection-status-area">
+          {renderConnectionStatus()}
+        </div>
+
+        {/* ★★★ お知らせティッカー (運営) ★★★ */}
+        <div className="mb-2"> {/* マージン調整 */}
+          <AnnouncementsTicker />
+        </div>
+
+        {/* 通常通知ティッカー */}
+        <div className="mb-4"> {/* マージン調整 */}
+          <NotificationTicker notifications={notifications} />
+        </div>
+
+        {/* 参加者情報 */}
+        <Card className="mb-4 bg-[#f2f2f2]/95 shadow-md">
+          <div className="p-4">
+            <h2 className="font-medium text-lg mb-2">現在の参加者</h2>
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <span>オンライン: {rooms.flatMap(room => room.seats?.filter(seat => seat.username) || []).length} 人</span>
+              {isProcessingCommand && (
+                <span className="flex items-center text-sm text-blue-500">
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  コマンド処理中...
+                </span>
+              )}
+            </div>
+
+            {/* プロフィール画像を表示するエリア */}
+            <div className="mt-4 flex flex-wrap gap-2"> {/* grid を flex flex-wrap に変更し、gapを調整 */}
+              <TooltipProvider> {/* TooltipProviderで囲む */}
+                {(() => {
+                    // profileImageUrl が存在する参加者のみをフィルタリング
+                    const participants = rooms.flatMap(room => room.seats?.filter(seat => seat.username && seat.profileImageUrl) || []);
+                    // ★★★ デバッグログ: フィルタリング後の参加者データ ★★★
+                    console.log('[Page] Participants data for Avatars (filtered):', participants);
+                    
+                    // フィルタリングされた参加者のみをマップ
+                    return participants.map((seat) => (
+                      <Tooltip key={seat.id}>
+                        <TooltipTrigger asChild>
+                           {/* サイズ、カーソル、ホバー効果、境界線を追加 */}
+                          <Avatar className="h-10 w-10 cursor-pointer hover:opacity-80 transition-opacity border-2 border-transparent hover:border-blue-300">
+                            {/* nullish coalescing operator を使用して null の場合に undefined を渡す */}
+                            <AvatarImage src={seat.profileImageUrl ?? undefined} alt={seat.username || '参加者'} />
+                            {/* フォールバック表示を調整 */}
+                            <AvatarFallback className="text-xs"> 
+                              {seat.username ? seat.username.slice(0, 2) : '?'} 
+                            </AvatarFallback>
+                          </Avatar>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p className="font-semibold">{seat.username || '不明'}</p>
+                          {seat.task && <p className="text-xs text-muted-foreground">タスク: {seat.task}</p>}
+                           {/* ★ デバッグ用: enterTime を表示してみる */}
+                           {seat.enterTime && <p className="text-xs text-gray-500">入室: {new Date(seat.enterTime).toLocaleTimeString()}</p>}
+                        </TooltipContent>
+                      </Tooltip>
+                    ));
+                })()}
+              </TooltipProvider>
+            </div>
+          </div>
+        </Card>
+        
+        {/* フォーカスルーム */}
+        <div className="mb-4">
+          {/* ★★★ デバッグログ追加 ★★★ */}
+          {(() => {
+              // 部屋データが存在すれば表示する (isLoadingに依存しない)
+              const focusRoomCondition = rooms.length > 0;
+              const focusSeatsData = rooms.flatMap(room => room.seats || []);
+              console.log('[Page] FocusRoom rendering condition:', focusRoomCondition);
+              console.log('[Page] FocusRoom isLoading:', isLoading);
+              console.log('[Page] FocusRoom rooms.length:', rooms.length);
+              console.log('[Page] FocusRoom seats data:', focusSeatsData);
+
+              if (focusRoomCondition) {
+                  return (
+                      <FocusRoom
+                          seats={focusSeatsData}
+                          roomId="focus-room"
+                      />
+                  );
+              } else {
+                  return (
+                      <div className="bg-[#f2f2f2]/95 rounded-lg p-8 text-center text-gray-600">
+                          <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin text-gray-400" />
+                          座席情報を読み込み中... または表示できる座席がありません。 (isLoading: {String(isLoading)}, rooms: {rooms.length})
+                      </div>
+                  );
+              }
+          })()}
+        </div>
+        
+        {/* BGM */}
+        <BGMPlayer />
+
+        {/* チャットルーム（非表示） */}
+        <div className="hidden">
+          {chatRooms.map(room => (
+            <Room key={room.id} room={room} />
+          ))}
+        </div>
+      </div>
+      
+      {/* フッター */}
+      <footer className="py-6 border-t border-white/10 text-white/70">
+        <div className="container mx-auto px-4 text-center text-sm">
+          <p>© 2023 focuscraft - プライバシー・ポリシー・利用規約</p>
+        </div>
+      </footer>
+    </main>
+  );
+}
+</file>
+
 <file path="package.json">
 {
   "name": "nextjs",
@@ -12343,8 +13052,8 @@ module.exports = nextConfig;
     "date-fns": "^3.6.0",
     "dotenv": "^16.4.7",
     "embla-carousel-react": "^8.3.0",
-    "eslint": "8.49.0",
-    "eslint-config-next": "13.5.1",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^13.5.1",
     "framer-motion": "^12.6.3",
     "googleapis": "^129.0.0",
     "input-otp": "^1.2.4",
@@ -12360,6 +13069,7 @@ module.exports = nextConfig;
     "react-resizable-panels": "^2.1.3",
     "recharts": "^2.12.7",
     "sonner": "^1.5.0",
+    "swr": "^2.3.3",
     "tailwind-merge": "^2.5.2",
     "tailwindcss": "3.3.3",
     "tailwindcss-animate": "^1.0.7",

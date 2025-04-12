@@ -1,26 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { SSEClient, SSEClientOptions } from '@/lib/api/sse/sseClient';
+import { SSEConnectionState, SystemMessage } from '@/lib/api/sse/sseTypes';
 
-export type SSEConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
-
-interface SystemMessage {
-  message: string;
-  type: 'info' | 'warning' | 'error';
-  timestamp: string;
-}
-
-interface SSEHookOptions {
-  endpoint: string;
-  onSystemMessage?: (message: SystemMessage) => void;
-  onMessage?: (data: any) => void;
-  onConnect?: () => void;
-  onDisconnect?: () => void;
-  onError?: (error: Event) => void;
-  maxRetries?: number;
-  initialBackoffDelay?: number;
-  maxBackoffDelay?: number;
-}
-
-interface SSEHookResult<T> {
+interface UseSSEResult<T> {
   data: T | null;
   connectionState: SSEConnectionState;
   lastSystemMessage: SystemMessage | null;
@@ -34,173 +16,160 @@ interface SSEHookResult<T> {
  * Server-Sent Events (SSE) のカスタムフック
  * 指数バックオフによる再接続ロジックとエラーハンドリングを実装
  */
-export function useSSE<T = any>(options: SSEHookOptions): SSEHookResult<T> {
-  const {
-    endpoint,
-    onSystemMessage,
-    onMessage,
-    onConnect,
-    onDisconnect,
-    onError,
-    maxRetries = 10,
-    initialBackoffDelay = 1000,
-    maxBackoffDelay = 60000,
-  } = options;
-
+export function useSSE<T = any>(options: SSEClientOptions): UseSSEResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [connectionState, setConnectionState] = useState<SSEConnectionState>('connecting');
   const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
-
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  /**
-   * 指数バックオフの待機時間を計算
-   */
-  const calculateBackoff = useCallback((retry: number) => {
-    // 2のべき乗で待機時間を増やし、最大値でキャップ
-    const exponentialDelay = Math.min(
-      maxBackoffDelay,
-      initialBackoffDelay * Math.pow(2, retry) * (1 + Math.random() * 0.2) // ジッターを加える
-    );
-    return Math.round(exponentialDelay);
-  }, [initialBackoffDelay, maxBackoffDelay]);
-
-  /**
-   * SSE接続を開始
-   */
-  const connect = useCallback(() => {
-    // 既存の接続があれば閉じる
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    // 接続中の状態に更新
-    setConnectionState(isReconnecting ? 'reconnecting' : 'connecting');
-
-    try {
-      const eventSource = new EventSource(endpoint);
-      eventSourceRef.current = eventSource;
-
-      // 接続時のハンドラ
-      eventSource.onopen = () => {
-        console.log('[SSE:Hook] Connection established');
-        setConnectionState('connected');
-        setIsReconnecting(false);
-        setRetryCount(0);
-        onConnect?.();
-      };
-
-      // 通常メッセージのハンドラ
-      eventSource.onmessage = (event) => {
-        try {
-          const parsedData = JSON.parse(event.data);
-          setData(parsedData);
-          onMessage?.(parsedData);
-        } catch (err) {
-          console.error('[SSE:Hook] Error parsing SSE data:', err, event.data);
-        }
-      };
-
-      // システムメッセージのハンドラ
-      eventSource.addEventListener('system-message', (event: MessageEvent) => {
-        try {
-          const systemMessage = JSON.parse(event.data) as SystemMessage;
-          setLastSystemMessage(systemMessage);
-          onSystemMessage?.(systemMessage);
-          
-          console.log(`[SSE:Hook] System message received: ${systemMessage.message} (${systemMessage.type})`);
-        } catch (err) {
-          console.error('[SSE:Hook] Error parsing system message:', err, event.data);
-        }
-      });
-
-      // エラーハンドラ
-      eventSource.onerror = (error) => {
-        console.error('[SSE:Hook] Connection error:', error);
-        
-        // 接続が切れた場合
-        if (eventSource.readyState === EventSource.CLOSED) {
-          setConnectionState('disconnected');
-          onDisconnect?.();
-          
-          // 最大再試行回数を超えていない場合は再接続を試みる
-          if (retryCount < maxRetries) {
-            const nextRetryCount = retryCount + 1;
-            setRetryCount(nextRetryCount);
-            setIsReconnecting(true);
-            
-            const delayMs = calculateBackoff(nextRetryCount);
-            console.log(`[SSE:Hook] Will attempt to reconnect in ${delayMs}ms (retry ${nextRetryCount}/${maxRetries})`);
-            
-            // 指定時間後に再接続
-            reconnectTimeoutRef.current = setTimeout(() => {
-              if (eventSourceRef.current?.readyState === EventSource.CLOSED) {
-                console.log(`[SSE:Hook] Attempting to reconnect (retry ${nextRetryCount}/${maxRetries})`);
-                connect();
-              }
-            }, delayMs);
-          } else {
-            console.error(`[SSE:Hook] Maximum reconnection attempts (${maxRetries}) reached`);
-            setConnectionState('error');
-          }
-        }
-        
-        onError?.(error);
-      };
-    } catch (err) {
-      console.error('[SSE:Hook] Failed to create EventSource:', err);
-      setConnectionState('error');
-    }
-  }, [
-    endpoint, 
-    isReconnecting, 
-    retryCount, 
-    maxRetries, 
-    calculateBackoff, 
-    onConnect, 
-    onMessage, 
-    onSystemMessage,
-    onDisconnect,
-    onError
-  ]);
-
-  /**
-   * SSE接続を閉じる
-   */
-  const disconnect = useCallback(() => {
-    if (eventSourceRef.current) {
-      console.log('[SSE:Hook] Closing connection');
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    setConnectionState('disconnected');
-    onDisconnect?.();
-  }, [onDisconnect]);
-
-  // コンポーネントマウント時にSSE接続を開始
+  
+  const clientRef = useRef<SSEClient | null>(null);
+  // オプションへの安定参照
+  const optionsRef = useRef<SSEClientOptions>(options);
+  const isFirstRenderRef = useRef(true);
+  
+  // オプションの更新
   useEffect(() => {
-    connect();
-
-    // クリーンアップ時に接続を閉じる
+    // 初回レンダリング時はスキップ（マウント時に接続するためのuseEffectに任せる）
+    if (isFirstRenderRef.current) {
+      console.log('[SSE:Hook] First render, skipping options update');
+      isFirstRenderRef.current = false;
+      return;
+    }
+    
+    // オプションの変更が本質的でない場合はスキップ
+    const isSignificantChange = (
+      options.endpoint !== optionsRef.current.endpoint ||
+      options.maxRetries !== optionsRef.current.maxRetries ||
+      options.initialBackoffDelay !== optionsRef.current.initialBackoffDelay ||
+      options.maxBackoffDelay !== optionsRef.current.maxBackoffDelay
+    );
+    
+    if (!isSignificantChange) {
+      console.log('[SSE:Hook] Options update is not significant, keeping current connection');
+      // 参照だけ更新
+      optionsRef.current = options;
+      return;
+    }
+    
+    console.log('[SSE:Hook] Significant options update detected, updating connection');
+    optionsRef.current = options;
+    
+    // オプションが変更された場合は再接続
+    if (clientRef.current && 
+        clientRef.current.state === 'connected' && 
+        isSignificantChange) {
+      console.log('[SSE:Hook] Options changed while connected, reconnecting');
+      if (clientRef.current) {
+        clientRef.current.disconnect();
+        clientRef.current = null;
+      }
+      
+      // 少し遅延させて再接続
+      setTimeout(() => {
+        if (!clientRef.current) {
+          connect();
+        }
+      }, 100);
+    }
+  }, [options]); // options変更時のみ実行
+  
+  // データメッセージハンドラ
+  const handleMessage = useCallback((newData: T) => {
+    setData(newData);
+    optionsRef.current.onMessage?.(newData);
+  }, []);
+  
+  // システムメッセージハンドラ
+  const handleSystemMessage = useCallback((message: SystemMessage) => {
+    setLastSystemMessage(message);
+    optionsRef.current.onSystemMessage?.(message);
+  }, []);
+  
+  // 接続状態の監視と更新
+  const updateConnectionState = useCallback((state: SSEConnectionState) => {
+    setConnectionState(state);
+    if (state === 'reconnecting') {
+      setIsReconnecting(true);
+    } else if (state === 'connected') {
+      setIsReconnecting(false);
+    }
+  }, []);
+  
+  // 切断メソッド - 先に定義して connect 内で使用できるようにする
+  const disconnect = useCallback(() => {
+    console.log('[SSE:Hook] Disconnecting from SSE endpoint');
+    if (clientRef.current) {
+      clientRef.current.disconnect();
+      clientRef.current = null; // 確実に参照をクリアする
+    }
+  }, []);
+  
+  // 接続メソッド
+  const connect = useCallback(() => {
+    console.log('[SSE:Hook] Connecting to SSE endpoint');
+    
+    // 既存の接続がある場合は状態を確認
+    if (clientRef.current) {
+      // 既に接続中または接続処理中の場合は何もしない
+      if (clientRef.current.state === 'connected' || 
+          clientRef.current.state === 'connecting' || 
+          clientRef.current.state === 'reconnecting') {
+        console.log(`[SSE:Hook] Already in state ${clientRef.current.state}, skipping connect`);
+        return;
+      }
+      
+      console.log('[SSE:Hook] Existing connection found, disconnecting first');
+      disconnect();
+    }
+    
+    // 新しい接続を作成
+    clientRef.current = new SSEClient({
+      ...optionsRef.current,
+      onMessage: handleMessage,
+      onSystemMessage: handleSystemMessage,
+      onConnect: () => {
+        updateConnectionState('connected');
+        setRetryCount(0);
+        optionsRef.current.onConnect?.();
+      },
+      onDisconnect: () => {
+        updateConnectionState('disconnected');
+        optionsRef.current.onDisconnect?.();
+      },
+      onError: (error) => {
+        // クライアントのエラー状態を確認
+        if (clientRef.current?.state === 'error') {
+          updateConnectionState('error');
+        } else if (clientRef.current?.currentRetryCount) {
+          setRetryCount(clientRef.current.currentRetryCount);
+        }
+        optionsRef.current.onError?.(error);
+      }
+    });
+    
+    clientRef.current.connect();
+  }, [handleMessage, handleSystemMessage, updateConnectionState, disconnect]);
+  
+  // マウント時に接続、アンマウント時に切断
+  useEffect(() => {
+    console.log('[SSE:Hook] Connection effect triggered');
+    let isComponentMounted = true;
+    
+    // 接続を開始
+    if (isComponentMounted) {
+      console.log('[SSE:Hook] Component is mounted, connecting...');
+      connect();
+    }
+    
+    // クリーンアップ関数
     return () => {
+      console.log('[SSE:Hook] Component unmounting, disconnecting...');
+      isComponentMounted = false;
       disconnect();
     };
-  }, [endpoint]);
-
+  }, []); // 空の依存配列 - マウント時のみ実行
+  
   return {
     data,
     connectionState,
@@ -210,4 +179,6 @@ export function useSSE<T = any>(options: SSEHookOptions): SSEHookResult<T> {
     isReconnecting,
     retryCount
   };
-} 
+}
+
+export { type SSEConnectionState, type SystemMessage }; 

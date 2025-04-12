@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import Image from 'next/image'; // Image コンポーネントをインポート
+import { User } from 'lucide-react'; // User アイコンをインポート
 
 // お知らせデータの型
 export interface Notification {
@@ -7,6 +9,7 @@ export interface Notification {
   message: string;
   timestamp: number; // ソートや識別に利用
   type?: 'info' | 'warning' | 'error'; // タイプに応じてスタイル変更も可能
+  profileImageUrl?: string | null; // ユーザーアイコンURL (追加)
 }
 
 interface NotificationTickerProps {
@@ -82,15 +85,15 @@ const NotificationTicker: React.FC<NotificationTickerProps> = ({
   // タイプに応じたスタイルを返すヘルパー関数
   const getNotificationStyle = (type?: 'info' | 'warning' | 'error') => {
     switch (type) {
-      case 'error': return 'text-red-300';
-      case 'warning': return 'text-yellow-300';
-      default: return 'text-white';
+      case 'error': return 'text-red-600'; // 濃い色に変更
+      case 'warning': return 'text-yellow-600'; // 濃い色に変更
+      default: return 'text-gray-700'; // デフォルトのテキスト色を変更
     }
   };
 
   return (
     <div
-      className={`fixed top-16 left-0 right-0 bg-gray-800/95 text-white py-2 px-4 z-20 overflow-hidden h-10 flex items-center backdrop-blur-sm shadow-lg ${className}`} // ヘッダーの高さに応じて top を調整
+      className={`bg-[#f2f2f2]/95 text-gray-700 py-2 px-4 overflow-hidden h-10 flex items-center rounded-lg shadow-md ${className}`} // 固定解除し、スタイル調整
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       role="region"
@@ -103,22 +106,54 @@ const NotificationTicker: React.FC<NotificationTickerProps> = ({
         <div className="w-full text-center relative h-full flex items-center justify-center">
           {/* AnimatePresenceで切り替えアニメーション */}
           <AnimatePresence initial={false} mode="wait">
-            <motion.span
+            <motion.div // span を div に変更し、内部にアイコンとテキストを配置
               key={currentNotification?.id ?? 'empty'} // key を変更して再レンダリングをトリガー
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.4, ease: "easeInOut" }}
-              className={`text-sm absolute inset-0 flex items-center justify-center truncate px-10 ${getNotificationStyle(currentNotification?.type)}`} // 中央揃え + Truncate
+              className={`absolute inset-0 flex items-center justify-center px-10 ${getNotificationStyle(currentNotification?.type)}`} // 中央揃え
               aria-label={`お知らせ ${currentIndex + 1}/${notifications.length}`}
             >
-              {currentNotification?.message}
-            </motion.span>
+              {/* アイコン表示 */} 
+              <div className="flex-shrink-0 w-5 h-5 mr-2">
+                {currentNotification?.profileImageUrl ? (
+                  <>
+                    <Image
+                      src={currentNotification.profileImageUrl}
+                      alt=""
+                      width={20}
+                      height={20}
+                      className="rounded-full object-cover"
+                      onError={(e) => {
+                        // 画像読み込みエラー時にデフォルトアイコンを表示するためのハンドリング（オプション）
+                        console.warn('Ticker Image Error:', e.currentTarget.src);
+                        // 必要であれば、ここでstateを更新してデフォルトアイコンに切り替える
+                        e.currentTarget.style.display = 'none'; // 画像を隠す
+                        const fallback = e.currentTarget.nextElementSibling; // 次の要素（デフォルトアイコン）を取得
+                        if (fallback) fallback.classList.remove('hidden'); // デフォルトアイコンを表示
+                      }}
+                      unoptimized
+                    />
+                    {/* 画像エラー時のフォールバック用 User アイコン (初期状態は隠す) */}
+                    <User className="w-full h-full text-gray-400 hidden" />
+                  </>
+                ) : (
+                  <User className="w-full h-full text-gray-400" /> // デフォルトアイコン
+                )}
+              </div>
+
+              {/* メッセージ表示 (truncate) */}
+              <span className={`truncate ${getNotificationStyle(currentNotification?.type)}`}>
+                {currentNotification?.message}
+              </span>
+
+            </motion.div>
           </AnimatePresence>
 
           {/* ページネーション表示 (オプション) */}
           {notifications.length > 1 && (
-             <div className="absolute bottom-1 right-2 text-xs opacity-50 select-none">
+             <div className="absolute bottom-1 right-2 text-xs opacity-50 select-none text-gray-500">
                {currentIndex + 1} / {notifications.length}
              </div>
           )}

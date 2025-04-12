@@ -23,7 +23,8 @@ async function setupSeatsChangeStream(
     setChangeStreamRetryCount: (count: number) => void,
     incrementChangeStreamRetryCount: () => number,
     isControllerClosed: () => boolean,
-    setupChangeStreams: () => Promise<void> // Function to retry setting up both streams
+    setupChangeStreams: () => Promise<void>, // Function to retry setting up both streams
+    updateActivityTimeFn?: () => void // アクティビティ更新関数を追加
 ) {
     try {
         const currentStream = getSeatsChangeStream();
@@ -64,12 +65,17 @@ async function setupSeatsChangeStream(
             const data = await fetchRoomData(db); // db is guaranteed non-null here
             console.log('[SSE Helper] Sending updated data to client');
             if (!isControllerClosed()) {
-                controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\\n\\n`));
+                controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
+                // データ送信時にアクティビティタイムを更新
+                if (typeof updateActivityTimeFn === 'function') {
+                  updateActivityTimeFn();
+                  console.log('[SSE Helper] Activity time updated after data change');
+                }
             }
           } catch (error) {
             console.error('[SSE Helper] Error processing change stream update:', error);
             if (!isControllerClosed()) {
-              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ error: 'Update failed' })}\\n\\n`));
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ error: 'Update failed' })}\n\n`));
               controller.enqueue(new TextEncoder().encode(
                 createSystemMessage('データ更新中にエラーが発生しました', 'error')
               ));
@@ -78,7 +84,7 @@ async function setupSeatsChangeStream(
         });
 
         newStream.on('error', async (error: Error) => {
-          console.error('[SSE Helper] Seats change stream error:', error);
+          console.error('[SSE Helper] Seats change stream error:', error.message, error.stack);
           if (!isControllerClosed()) {
             controller.enqueue(new TextEncoder().encode(
               createSystemMessage('サーバーとの接続に問題が発生しました。再接続を試みています...', 'warning')
@@ -98,43 +104,36 @@ async function setupSeatsChangeStream(
               console.log('[SSE Helper] Cleared auto-exit interval due to seats stream error.');
           }
 
-
-          const MAX_RETRIES = 10;
-          if (getChangeStreamRetryCount() < MAX_RETRIES && !isControllerClosed()) {
-            const newRetryCount = incrementChangeStreamRetryCount();
-            const delayMs = calculateBackoff(newRetryCount);
-            console.log(`[SSE Helper] Will attempt to reconnect change streams in ${delayMs}ms (retry ${newRetryCount}/${MAX_RETRIES})`);
-
-            setTimeout(async () => {
-              if (!isControllerClosed()) {
-                console.log(`[SSE Helper] Attempting to reconnect to change streams (retry ${newRetryCount}/${MAX_RETRIES})`);
+          // 深刻なエラーのみストリームを終了する（例：MongoDB接続の完全切断など）
+          if (error.message.includes('no longer connected to server') ||
+              error.message.includes('connection closed') ||
+              error.message.includes('topology closed')) {
+            if (!isControllerClosed()) {
+              console.error('[SSE Helper] Critical connection error detected. Closing stream.');
+              controller.enqueue(new TextEncoder().encode(
+                createSystemMessage('サーバーとの接続が失われました。ページを再読み込みしてください。', 'error')
+              ));
+              
+              // エラーフラグを送信
+              controller.enqueue(new TextEncoder().encode(`event: error\ndata: ${JSON.stringify({ 
+                code: 'CONNECTION_LOST',
+                message: 'Server connection lost' 
+              })}\n\n`));
+              
+              // 少し遅延させてからストリームを閉じる（クライアントがメッセージを受け取れるようにするため）
+              setTimeout(() => {
                 try {
-                  // ★ Retry setting up *both* streams
-                  await setupChangeStreams();
-                  // 再接続成功したらリトライカウントをリセット
-                  setChangeStreamRetryCount(0); // リセット！
-                  console.log('[SSE Helper] Successfully reconnected change streams');
-
                   if (!isControllerClosed()) {
-                    controller.enqueue(new TextEncoder().encode(
-                      createSystemMessage('サーバーとの接続が回復しました', 'info')
-                    ));
-                    const refreshedData = await fetchRoomData(db); // db is non-null
-                    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(refreshedData)}\\n\\n`));
+                    controller.close();
+                    console.log('[SSE Helper] Controller closed due to critical error.');
                   }
-                } catch (reconnectError) {
-                  console.error('[SSE Helper] Failed to reconnect change streams:', reconnectError);
-                  // 再接続失敗した場合、さらに待機するか、エラー処理を継続 (次のエラーイベントで再度試行される)
+                } catch (e) {
+                  console.error('[SSE Helper] Error closing controller after critical error:', e);
                 }
-              }
-            }, delayMs);
-          } else if (!isControllerClosed()) {
-            console.error(`[SSE Helper] Maximum reconnection attempts (${MAX_RETRIES}) reached or controller closed`);
-            controller.enqueue(new TextEncoder().encode(
-              createSystemMessage('サーバーとの接続が失われました。ページを再読み込みしてください。', 'error')
-            ));
-            // Consider closing the controller here if max retries are reached
-            // controller.close(); isControllerClosed = true; // Needs careful handling
+              }, 500);
+            }
+          } else {
+            console.log('[SSE Helper] Non-critical error detected. Allowing automatic reconnection.');
           }
         });
       } catch (setupError) {
@@ -167,75 +166,60 @@ async function setupNotificationsChangeStream(
         }
 
         console.log('[SSE Helper] Setting up MongoDB notifications change stream');
-        const newStream = db.collection('notifications').watch([{ $match: { operationType: 'insert' } }]);
+        const newStream = db.collection('announcements').watch([{ $match: { operationType: 'insert' } }]);
         setNotificationsChangeStream(newStream);
-        console.log('[SSE Helper] Notifications change stream initialized');
+        console.log('[SSE Helper] Announcements change stream initialized');
 
-        newStream.on('change', async (changeEvent: ChangeStreamDocument<any>) => { // Add type <any> or specific notification type
+        newStream.on('change', async (changeEvent: ChangeStreamDocument<any>) => {
           if (isControllerClosed()) {
-            console.log('[SSE Helper] Controller is already closed, ignoring notifications change event');
+            console.log('[SSE Helper] Controller is already closed, ignoring announcement change event');
             return;
           }
 
-          // 挿入操作のみを処理 (pipeline で $match してるが念のため)
           if (changeEvent.operationType === 'insert') {
             try {
-              const notification = changeEvent.fullDocument;
-              if (notification) {
-                console.log('[SSE Helper] New notification detected:', notification.message);
-
-                // システムメッセージとして送信
+              const announcement = changeEvent.fullDocument;
+              if (announcement) {
+                console.log('[SSE Helper] New announcement detected:', announcement.message);
                 if (!isControllerClosed()) {
                   controller.enqueue(new TextEncoder().encode(
                     createSystemMessage(
-                      notification.message,
-                      notification.type || 'info',
-                      notification._id?.toString() // Use MongoDB _id as message ID if available
+                      `[お知らせ] ${announcement.message}`,
+                      'info',
+                      announcement._id?.toString()
                     )
                   ));
+                   console.log('[SSE Helper] Sent announcement system message.');
                 }
               }
             } catch (error) {
-              console.error('[SSE Helper] Error processing notification change:', error);
+              console.error('[SSE Helper] Error processing announcement change:', error);
             }
           }
         });
 
         newStream.on('error', async (error: Error) => {
-          console.error('[SSE Helper] Notifications change stream error:', error);
+          console.error('[SSE Helper] Announcements change stream error:', error.message, error.stack);
 
            const currentStreamOnError = getNotificationsChangeStream();
           if (currentStreamOnError) {
             await currentStreamOnError.close().catch((err: Error) =>
-              console.error('[SSE Helper] Error closing notifications change stream on error:', err));
+              console.error('[SSE Helper] Error closing announcements change stream on error:', err));
             setNotificationsChangeStream(null);
           }
 
-          // エラー発生時は一定時間後に再接続を試みる (Seats streamのエラーハンドリングに統合してもよい)
           if (!isControllerClosed()) {
-             console.warn('[SSE Helper] Notifications stream encountered an error. Relying on seats stream error handling for reconnection.');
-             // Optionally, trigger the main reconnection logic if needed, but often seats stream errors handle this
-             // Example: Trigger a general reconnect attempt
-             // setTimeout(async () => {
-             //   if (!isControllerClosed()) {
-             //     try {
-             //       await setupStreamsFn(); // Retry setting up both streams
-             //       console.log('[SSE Helper] Attempted reconnection after notification stream error.');
-             //     } catch (reconnectError) {
-             //        console.error('[SSE Helper] Failed to reconnect after notification stream error:', reconnectError);
-             //     }
-             //   }
-             // }, 5000); // Wait 5 seconds before retry
+             console.warn('[SSE Helper] Announcements stream encountered an error. Relying on seats stream error handling for reconnection.');
           }
         });
       } catch (setupError) {
-        console.error('[SSE Helper] Error setting up notifications change stream:', setupError);
+        console.error('[SSE Helper] Error setting up announcements change stream:', setupError);
          if (!isControllerClosed()) {
             controller.enqueue(new TextEncoder().encode(
-                createSystemMessage('通知データのストリーム監視設定に失敗しました。', 'error')
+                createSystemMessage('お知らせデータのストリーム監視設定に失敗しました。', 'error')
             ));
         }
-        throw setupError; // エラーを上に伝播させる
+        throw setupError;
       }
 }
 
@@ -250,12 +234,23 @@ export async function GET() {
   let seatsChangeStream: ChangeStream | null = null;
   let notificationsChangeStream: ChangeStream | null = null;
   let autoExitIntervalId: NodeJS.Timeout | null = null;
-  let manager: ChangeStreamManager | null = null;
-  let isControllerClosed = false;
+  let keepAliveIntervalId: NodeJS.Timeout | null = null; // Added for keep-alive
+  let connectionStatusIntervalId: NodeJS.Timeout | null = null; // 追加: 接続状態の定期チェック用
+  let inactivityTimeoutId: NodeJS.Timeout | null = null; // 追加: 非アクティブ検出用
+  let lastActivityTime = Date.now(); // 追加: 最後のアクティビティ時間
   let changeStreamRetryCount = 0;
-  // --- End Variables ---
+  const manager = ChangeStreamManager.getInstance();
+  let isControllerClosed = false; // Add flag
+  const abortController = new AbortController(); // 追加: AbortControllerを使用して接続終了を検出
+  let connectionId: string = ''; // 追加: この接続の固有ID
+  const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 追加: 5分間の非アクティブでタイムアウト
 
-  // --- Accessor and Mutator functions for helper functions ---
+  // --- 活動時間の更新関数 ---
+  const updateActivityTime = () => {
+    lastActivityTime = Date.now();
+  };
+
+  // --- Accessor/Mutator functions for scoped variables ---
   const getSeatsChangeStream = () => seatsChangeStream;
   const setSeatsChangeStream = (stream: ChangeStream | null) => { seatsChangeStream = stream; };
   const getNotificationsChangeStream = () => notificationsChangeStream;
@@ -266,178 +261,326 @@ export async function GET() {
   const setChangeStreamRetryCount = (count: number) => { changeStreamRetryCount = count; };
   const incrementChangeStreamRetryCount = () => { return ++changeStreamRetryCount; };
   const isControllerClosedFn = () => isControllerClosed;
-  // --- End Accessors/Mutators ---
 
+  // --- Cleanup function --- (defined before stream to be accessible)
+  const cleanupResources = () => {
+    console.log('[SSE Cleanup] Cleaning up resources...'); // ★ Log cleanup start
+    
+    // 既にクリーンアップされている場合は何もしない
+    if (isControllerClosed) {
+      console.log('[SSE Cleanup] Resources already cleaned up, skipping');
+      return;
+    }
+    
+    isControllerClosed = true; // Set flag immediately
+    
+    // 各種インターバルタイマーの解除
+    if (keepAliveIntervalId) {
+      clearInterval(keepAliveIntervalId);
+      keepAliveIntervalId = null;
+      console.log('[SSE Cleanup] Cleared keep-alive interval.');
+    }
+    
+    if (autoExitIntervalId) {
+      clearInterval(autoExitIntervalId);
+      setAutoExitIntervalId(null); // Use the setter
+      console.log('[SSE Cleanup] Cleared auto-exit interval.');
+    }
+    
+    if (connectionStatusIntervalId) {
+      clearInterval(connectionStatusIntervalId);
+      connectionStatusIntervalId = null;
+      console.log('[SSE Cleanup] Cleared connection status interval.');
+    }
+    
+    // タイムアウト検出のクリア
+    if (inactivityTimeoutId) {
+      clearTimeout(inactivityTimeoutId);
+      inactivityTimeoutId = null;
+      console.log('[SSE Cleanup] Cleared inactivity timeout.');
+    }
+    
+    // Close change streams safely
+    const closePromises = [];
+    const currentSeatsStream = getSeatsChangeStream();
+    if (currentSeatsStream) {
+        console.log('[SSE Cleanup] Closing seats change stream...');
+        closePromises.push(currentSeatsStream.close().catch((err: Error) => console.error('[SSE Cleanup] Error closing seats stream:', err)));
+        setSeatsChangeStream(null); // Clear reference
+    }
+    const currentNotificationsStream = getNotificationsChangeStream();
+     if (currentNotificationsStream) {
+        console.log('[SSE Cleanup] Closing notifications change stream...');
+        closePromises.push(currentNotificationsStream.close().catch((err: Error) => console.error('[SSE Cleanup] Error closing notifications stream:', err)));
+        setNotificationsChangeStream(null); // Clear reference
+    }
 
-  try {
-    // ReadableStream is created within the try block
-    const stream = new ReadableStream({
-      async start(controller) {
-        console.log('[SSE] Stream initialization started');
-
-        // --- Function to setup both change streams ---
-        // Defined inside start to have access to controller and scoped variables easily
-        const setupStreams = async () => {
-            if (!db || !manager) {
-                 console.error('[SSE Setup] Cannot setup change stream: DB or Manager not initialized.');
-                 throw new Error('DB or Manager not initialized.');
-             }
-            await setupSeatsChangeStream(
-                db, manager, controller, checkAutoExit,
-                getSeatsChangeStream, setSeatsChangeStream,
-                getAutoExitIntervalId, setAutoExitIntervalId,
-                getChangeStreamRetryCount, setChangeStreamRetryCount, incrementChangeStreamRetryCount,
-                isControllerClosedFn, setupStreams // Pass self for retry
-            );
-            await setupNotificationsChangeStream(
-                db, controller,
-                getNotificationsChangeStream, setNotificationsChangeStream,
-                isControllerClosedFn, setupStreams // Pass self for retry
-            );
-             // Send initial data after streams are set up
-             console.log('[SSE Setup] Fetching initial data...');
-             const initialData = await fetchRoomData(db);
-             if (!isControllerClosedFn()) {
-                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialData)}\\n\\n`));
-                 console.log('[SSE Setup] Initial data sent.');
-             }
-        };
-        // --- End setupStreams function ---
-
-
-        // --- Auto Exit Check function (defined inside start) ---
-        const checkAutoExit = async () => {
-            if (isControllerClosedFn() || !db) { // Use function accessor
-              console.log('[SSE AutoExit] Check skipped: Controller closed or DB not available.');
-               const currentIntervalId = getAutoExitIntervalId();
-               if (currentIntervalId) {
-                 clearInterval(currentIntervalId);
-                 setAutoExitIntervalId(null);
-                 console.log('[SSE AutoExit] Interval cleared due to closed controller/DB issue during check.');
-               }
-              return;
-            }
-            try {
-                console.log('[SSE AutoExit] Running auto-exit check...');
-                const results = await checkAndProcessAutoExit(db, false); // db is non-null here
-
-                if (results.processedCount > 0) {
-                  console.log(`[SSE AutoExit] ${results.processedCount} seats processed.`);
-                  if (!isControllerClosedFn()) {
-                    const updatedData = await fetchRoomData(db);
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(updatedData)}\\n\\n`));
-                    controller.enqueue(encoder.encode(
-                      createSystemMessage(`${results.processedCount}人のユーザーが自動退室しました`, 'info')
-                    ));
-                    console.log('[SSE AutoExit] Update sent after auto-exit.');
-                  }
-                } else {
-                  // console.log('[SSE AutoExit] No expired seats found.'); // Reduce verbosity
-                }
-              } catch (error) {
-                console.error('[SSE AutoExit] Error during check:', error);
-                 if (!isControllerClosedFn()) {
-                    controller.enqueue(encoder.encode(
-                      createSystemMessage(`自動退室チェック中にエラー発生: ${(error as Error).message}`, 'error')
-                    ));
-                }
-              }
-          };
-        // --- End Auto Exit Check function ---
-
-
-        try {
-          // --- Initialization moved inside start ---
-          console.log('[SSE Start] Connecting to MongoDB...');
-          client = await clientPromise; // Assign to scoped variable
-          db = client.db('coworking'); // Assign to scoped variable
-          console.log('[SSE Start] MongoDB connection established.');
-
-          manager = ChangeStreamManager.getInstance(); // Assign to scoped variable
-          manager.registerConnection();
-          console.log('[SSE Start] ChangeStreamManager instance obtained and connection registered.');
-          // --- End Initialization ---
-
-          // --- Setup Change Streams ---
-          await setupStreams();
-          console.log('[SSE Start] Initial change stream setup complete.');
-
-        } catch (startError) {
-          console.error('[SSE Start] Error during stream start initialization:', startError);
-          try {
-            if (!isControllerClosedFn()) {
-                controller.enqueue(encoder.encode(
-                  createSystemMessage(`サーバー初期化エラー: ${(startError as Error).message}`, 'error')
-                ));
-            }
-          } catch (enqueueError) {
-            console.error('[SSE Start] Failed to enqueue start error message:', enqueueError);
-          }
-          // Close stream and cleanup resources on initialization failure
-          if (!isControllerClosedFn()) {
-              controller.close();
-          }
-          isControllerClosed = true; // Set flag
-          cleanupResources(); // Call cleanup
+    // 重要な修正: MongoDB clientは閉じない
+    // デベロップモードでは共有クライアントを使用しているため
+    // ここでクライアントを閉じると他のSSE接続で問題が発生する
+    Promise.all(closePromises).then(() => {
+        console.log('[SSE Cleanup] All change streams closed.');
+        
+        // 代わりに参照のみをクリア
+        client = null;
+        db = null;
+        console.log('[SSE Cleanup] MongoDB client references cleared (connection maintained for other streams).');
+        
+        // 接続管理から削除
+        if (connectionId) {
+          manager.unregisterConnection(connectionId);
+          console.log(`[SSE Cleanup] Connection ${connectionId} unregistered from manager.`);
+          
+          // 全体の接続状態をログ出力
+          manager.logConnectionStatus();
+        } else {
+          console.warn('[SSE Cleanup] No connectionId found when cleaning up');
+          manager.unregisterConnection();
         }
-      },
+    });
 
-      cancel(reason) {
-        console.log('[SSE Cancel] Stream cancelled by client.', reason);
+    console.log('[SSE Cleanup] Resources cleaned up.'); // ★ Log cleanup end
+  };
+
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      console.log('[SSE] Stream started'); // ★ Log stream start
+      connectionId = manager.registerConnection();
+      console.log(`[SSE] New connection registered with ID: ${connectionId}`);
+      
+      // 初期アクティビティタイム設定
+      updateActivityTime();
+      
+      // 非アクティブ検出タイマーの設定
+      const setupInactivityTimeout = () => {
+        // 既存のタイマーをクリア
+        if (inactivityTimeoutId) {
+          clearTimeout(inactivityTimeoutId);
+        }
+        
+        // 新しいタイマーを設定
+        inactivityTimeoutId = setTimeout(() => {
+          const currentTime = Date.now();
+          const inactiveTime = currentTime - lastActivityTime;
+          
+          if (inactiveTime >= INACTIVITY_TIMEOUT) {
+            console.log(`[SSE] Connection ${connectionId} inactive for ${inactiveTime}ms, closing`);
+            if (!isControllerClosed) {
+              // 非アクティブなコネクションを閉じる
+              controller.enqueue(encoder.encode(
+                createSystemMessage('長時間アクティビティがないためサーバー接続を終了します。', 'warning')
+              ));
+              
+              // タイムアウトメッセージを送信
+              controller.enqueue(encoder.encode(`event: timeout\ndata: ${JSON.stringify({ 
+                code: 'INACTIVITY_TIMEOUT',
+                message: 'Connection closed due to inactivity',
+                inactiveTime
+              })}\n\n`));
+              
+              // 少し遅延させてからリソースをクリーンアップ
+              setTimeout(() => {
+                cleanupResources();
+              }, 500);
+            }
+          } else {
+            // まだタイムアウトしていない場合は再度チェックをスケジュール
+            setupInactivityTimeout();
+          }
+        }, INACTIVITY_TIMEOUT);
+      };
+      
+      // 初回タイムアウト検出を設定
+      setupInactivityTimeout();
+      
+      // 定期的な接続状態チェックを開始
+      connectionStatusIntervalId = setInterval(() => {
         if (!isControllerClosed) {
-            isControllerClosed = true;
-            cleanupResources(); // Call cleanup
+          // 全体の接続状態をログ出力
+          manager.logConnectionStatus();
+        } else if (connectionStatusIntervalId) {
+          clearInterval(connectionStatusIntervalId);
+          connectionStatusIntervalId = null;
         }
-      },
+      }, 60000); // 1分ごとに状態をログ出力
+
+      // リーダー切断検出の改善
+      // クライアントのリクエスト終了を検出する
+      const { signal } = abortController;
+      signal.addEventListener('abort', () => {
+        console.log('[SSE] AbortController signal triggered - client disconnected');
+        if (!isControllerClosed) {
+          cleanupResources();
+        }
+      });
+
+      const setupStreams = async () => {
+        // Reset retry count when attempting setup
+        // setChangeStreamRetryCount(0); // <--- この行もコメントアウト
+        console.log('[SSE Setup] Attempting to setup change streams...');
+        try {
+          client = await clientPromise;
+          
+          // 接続状態を確認（修正版）
+          try {
+            // サーバーに軽量なpingコマンドを送信して接続状態を確認
+            await client.db('admin').command({ ping: 1 });
+            console.log('[SSE Setup] MongoDB connection verified by ping');
+          } catch (pingError) {
+            console.log('[SSE Setup] MongoDB client not responding to ping. Attempting to reconnect...');
+            // clientPromiseを再取得して接続を確保
+            try {
+              client = await clientPromise;
+              await client.db('admin').command({ ping: 1 });
+            } catch (reconnectError) {
+              console.error('[SSE Setup] Failed to reconnect to MongoDB:', reconnectError);
+              throw new Error('Failed to establish MongoDB connection after retry');
+            }
+          }
+          
+          db = client.db('coworking');
+          console.log('[SSE Setup] MongoDB connected');
+
+          // Setup both streams concurrently (or sequentially if needed)
+          await Promise.all([
+            setupSeatsChangeStream(db, manager, controller, checkAutoExit, getSeatsChangeStream, setSeatsChangeStream, getAutoExitIntervalId, setAutoExitIntervalId, getChangeStreamRetryCount, setChangeStreamRetryCount, incrementChangeStreamRetryCount, isControllerClosedFn, setupStreams, updateActivityTime),
+            setupNotificationsChangeStream(db, controller, getNotificationsChangeStream, setNotificationsChangeStream, isControllerClosedFn, setupStreams)
+          ]);
+          console.log('[SSE Setup] Both change streams setup successfully');
+
+          // --- Initial Data Fetch and Send ---
+          console.log('[SSE Setup] Fetching initial room data...'); // ★ Log initial fetch
+          try {
+            const initialData = await fetchRoomData(db);
+            const initialDataString = `data: ${JSON.stringify(initialData)}\n\n`;
+            console.log('[SSE Setup] Sending initial data to client:', JSON.stringify(initialData).substring(0, 100) + '...'); // ★ Log initial send (limit length)
+            if (!isControllerClosed) { // Check flag before enqueue
+                controller.enqueue(encoder.encode(initialDataString));
+                console.log('[SSE Setup] Initial data enqueued.'); // ★ Log enqueue success
+            } else {
+                console.warn('[SSE Setup] Controller closed before initial data could be sent.'); // ★ Log if closed
+            }
+          } catch (fetchError) {
+              console.error('[SSE Setup] Error fetching or sending initial data:', fetchError);
+              if (!isControllerClosed) {
+                  controller.enqueue(encoder.encode(createSystemMessage('初期データの取得に失敗しました。', 'error')));
+                  // ★ 初期データ取得失敗時もストリームを閉じる
+                  try {
+                     controller.close();
+                     console.log('[SSE Setup] Controller closed due to initial data fetch error.');
+                  } catch (e) {
+                     console.error('[SSE Setup] Error closing controller after initial data fetch error:', e);
+                  }
+              }
+          }
+          // --- End Initial Data ---
+
+        } catch (error) {
+          console.error('[SSE Setup] Error setting up streams:', error);
+          if (!isControllerClosed) { // Check flag before enqueue
+            controller.enqueue(encoder.encode(createSystemMessage('サーバー接続中にエラーが発生しました。', 'error')));
+            // ★ ストリーム設定失敗時もストリームを閉じる
+            try {
+               controller.close();
+               console.log('[SSE Setup] Controller closed due to stream setup error.');
+            } catch (e) {
+               console.error('[SSE Setup] Error closing controller after stream setup error:', e);
+            }
+          }
+        }
+      };
+
+      const checkAutoExit = async () => {
+         if (isControllerClosed) return; // Don't run if closed
+         console.log('[SSE AutoExit] Starting auto-exit check...');
+         try {
+           if (!db) {
+             console.warn('[SSE AutoExit] DB not available, attempting to connect');
+             try {
+               client = await clientPromise;
+               db = client.db('coworking');
+             } catch (connectError) {
+               console.error('[SSE AutoExit] Failed to reconnect DB for auto-exit check:', connectError);
+               return; // Skip check if DB connection fails
+             }
+           }
+           const result = await checkAndProcessAutoExit(db);
+           if (result && result.processedCount > 0) {
+             console.log(`[SSE AutoExit] Processed ${result.processedCount} auto-exits. Fetching updated data...`);
+             // Auto-exitが発生したらデータを再取得して送信
+             const updatedData = await fetchRoomData(db);
+             if (!isControllerClosed) { // Check flag
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(updatedData)}\n\n`));
+                console.log('[SSE AutoExit] Sent updated data after auto-exit.');
+             }
+           } else {
+               // console.log('[SSE AutoExit] No users processed for auto-exit.');
+           }
+         } catch (error) {
+           console.error('[SSE AutoExit] Error during auto-exit check:', error);
+           if (!isControllerClosed) { // Check flag
+               controller.enqueue(encoder.encode(createSystemMessage('自動退室処理中にエラーが発生しました。', 'warning')));
+           }
+         }
+       };
+
+      // Initial setup
+      await setupStreams();
+
+      // キープアライブメッセージの送信間隔を短く設定
+      keepAliveIntervalId = setInterval(() => {
+        if (!isControllerClosed) {
+          try {
+            console.log('[SSE] Sending keep-alive ping');
+            controller.enqueue(encoder.encode(`: ping ${new Date().toISOString()}\n\n`));
+            updateActivityTime(); // キープアライブを送信するたびにアクティビティ時間を更新
+          } catch (error) {
+            console.error('[SSE] Error sending keep-alive:', error);
+            // エラーが発生した場合はインターバルをクリア
+            if (keepAliveIntervalId) {
+              clearInterval(keepAliveIntervalId);
+              keepAliveIntervalId = null;
+            }
+          }
+        } else if (keepAliveIntervalId) {
+          clearInterval(keepAliveIntervalId);
+          keepAliveIntervalId = null;
+        }
+      }, 20000); // 20秒ごとに送信（ブラウザやプロキシのタイムアウト対策）
+
+    },
+    cancel(reason) {
+      console.log(`[SSE] Stream cancelled for connection ${connectionId}. Reason:`, reason); // ★ Log cancellation
+      cleanupResources();
+    }
+  });
+
+  const { readable, writable } = new TransformStream();
+  const responseStream = readable;
+
+  // リクエストが終了したらabortControllerを発火させる
+  const requestCleanup = () => {
+    console.log('[SSE] Request cleanup triggered');
+    abortController.abort();
+  };
+
+  // クライアント切断時にクリーンアップを実行
+  try {
+    stream.pipeTo(writable).catch((error) => {
+      console.error('[SSE] Stream pipe error:', error);
+      requestCleanup();
     });
-
-     // --- Cleanup function ---
-     const cleanupResources = () => {
-         console.log('[SSE Cleanup] Cleaning up resources...');
-         if (manager) {
-             manager.unregisterConnection();
-             console.log('[SSE Cleanup] Connection unregistered from manager.');
-             manager = null; // Clear reference
-         }
-         const currentIntervalId = getAutoExitIntervalId();
-         if (currentIntervalId) {
-           clearInterval(currentIntervalId);
-           setAutoExitIntervalId(null);
-           console.log('[SSE Cleanup] Auto-exit interval cleared.');
-         }
-         const currentSeatsStream = getSeatsChangeStream();
-         if (currentSeatsStream) {
-           currentSeatsStream.close().catch(err => console.error('[SSE Cleanup] Error closing seats stream:', err));
-           setSeatsChangeStream(null);
-           console.log('[SSE Cleanup] Seats change stream closed.');
-         }
-         const currentNotificationsStream = getNotificationsChangeStream();
-          if (currentNotificationsStream) {
-           currentNotificationsStream.close().catch(err => console.error('[SSE Cleanup] Error closing notifications stream:', err));
-           setNotificationsChangeStream(null);
-           console.log('[SSE Cleanup] Notifications change stream closed.');
-         }
-         // Note: MongoDB client connection is managed by clientPromise singleton,
-         // typically not closed here per request unless specifically required.
-         console.log('[SSE Cleanup] Resource cleanup finished.');
-     };
-     // --- End Cleanup function ---
-
-    // Return the response with the stream
-    return new NextResponse(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
-
   } catch (error) {
-    // Critical error in GET handler (e.g., ReadableStream creation failed)
-    console.error('[SSE Critical] Error in GET handler:', error);
-    return new NextResponse(JSON.stringify({ error: 'Internal Server Error in SSE handler' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    console.error('[SSE] Error setting up stream pipe:', error);
+    requestCleanup();
   }
+
+  return new NextResponse(responseStream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
 }
