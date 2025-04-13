@@ -6,6 +6,7 @@ import { ja } from "date-fns/locale";
 import { Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { usePomodoro } from "@/hooks/use-pomodoro";
+import Image from "next/image";
 
 // ヘッダー用に簡略化したタイマー情報
 const POMODORO_MODES = {
@@ -125,13 +126,16 @@ export default function Header() {
 
   return (
     <header className="fixed top-0 w-full h-16 border-b bg-background/70 backdrop-blur-md z-10">
-      <div className="container h-full flex items-center justify-between">
+      <div className="w-full h-full flex items-center justify-between p-4">
         <div className="flex items-center gap-4">
-          <h1 className="font-bold text-xl">CONNECT</h1>
-          <div className="hidden md:flex gap-6 text-sm text-muted-foreground">
-            <a href="/" className="hover:text-foreground transition">メイン</a>
-            <a href="#about" className="hover:text-foreground transition">About</a>
-            <a href="#guide" className="hover:text-foreground transition">ガイド</a>
+          <div className="relative h-48 w-48">
+            <Image 
+              src="/connect_logo.png" 
+              alt="CONNECT" 
+              fill
+              style={{ objectFit: 'contain' }}
+              priority
+            />
           </div>
         </div>
         

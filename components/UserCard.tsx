@@ -72,7 +72,7 @@ export default function UserCard({ user, roomId, position }: UserCardProps) {
   };
   
   return (
-    <div className="bg-white rounded-lg p-3 flex flex-col shadow-sm">
+    <div className="bg-white/80 backdrop-blur-sm rounded-lg p-3 flex flex-col shadow-sm border border-white/30">
       <div className="flex items-center gap-2 mb-1">
         {hasValidProfileImage ? (
           <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-gray-100">
@@ -87,7 +87,7 @@ export default function UserCard({ user, roomId, position }: UserCardProps) {
             />
           </div>
         ) : (
-          <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
+          <div className="w-8 h-8 rounded-full bg-gray-200/80 flex items-center justify-center flex-shrink-0">
             <User className="h-5 w-5 text-gray-500" />
           </div>
         )}

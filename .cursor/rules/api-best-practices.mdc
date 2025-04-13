@@ -1,1 +1,126 @@
- 
+# API利用のベストプラクティス
+
+## YouTube API利用のガイドライン
+
+YouTube Data APIは厳格なクォータ制限があり、効率的な利用方法が必要です。
+
+### クォータ管理
+
+1. **キャッシュの活用**
+   - ライブチャットIDなど変更頻度の低いデータはサーバーサイドでキャッシュする
+   - キャッシュキーはvideoIdなど一意の識別子を使用する
+   - 複数のリクエスト間でデータを共有するため、グローバル変数やデータベースを使用する
+
+2. **バックオフの実装**
+   - クォータ超過エラーが発生した場合は、一定時間（10〜30分）リクエストを抑制する
+   - 指数バックオフ戦略を使用して、連続エラー時には待機時間を延長する
+   - エラー状態はサーバーサイドで保持し、クライアントにも通知する
+
+3. **ポーリング間隔の最適化**
+   - YouTube APIからの推奨ポーリング間隔（`pollingIntervalMillis`）を尊重する
+   - 最小でも5秒以上の間隔を設定する
+   - クォータ上限に近づいた場合は、動的にポーリング間隔を延長する
+
+## エラーハンドリングのベストプラクティス
+
+1. **エラータイプの区別**
+   - クォータ超過（429/403 + "quotaExceeded"）
+   - 認証エラー（401/403）
+   - サーバーエラー（5xx）
+   - クライアントエラー（4xx）
+   - ネットワークエラー
+
+2. **ユーザーへの通知**
+   - エラーの性質に応じて適切なメッセージを表示
+   - 永続的なエラーと一時的なエラーを区別
+   - 復旧予想時間を可能な限り提示
+
+3. **グレースフルデグラデーション**
+   - 一部機能が利用できなくても、他の機能は継続して提供
+   - キャッシュデータがある場合は古いデータでも表示
+   - オフライン操作のサポート（可能な場合）
+
+## パフォーマンス最適化
+
+1. **バッチ処理**
+   - 複数のアイテムを一度に取得する（例: YouTube API の maxResults パラメータ）
+   - 不要なフィールドを除外する（例: YouTube API の fields パラメータ）
+
+2. **リクエスト削減**
+   - 同じデータに対する重複リクエストを防止
+   - ユーザーインタラクションがある場合のみ特定のAPIを呼び出す
+   - ページが非アクティブの場合はポーリングを一時停止または間隔を延長
+
+3. **レスポンスサイズ最適化**
+   - 必要最小限のデータのみを返す
+   - 圧縮の活用（gzip/brotli）
+   - JSON形式の効率的な設計
+
+## YouTube APIの仕様と制限
+
+### クォータ計算方法
+
+YouTube Data API v3では、各操作に対して「ユニット」と呼ばれるコストが設定されています。
+標準的なアカウントでは、1日あたり10,000ユニットが割り当てられます。
+
+主な操作のコスト：
+- videos.list: 1〜100ユニット（パラメータによって異なる）
+- search.list: 100ユニット
+- liveChatMessages.list: 1〜5ユニット
+
+### エラーコードとメッセージ
+
+- `quotaExceeded`: 日次クォータを超過した場合
+- `rateLimitExceeded`: 短時間に多すぎるリクエストを送信した場合
+- `dailyLimitExceeded`: 日次制限に達した場合
+
+## 具体的な実装例
+
+```typescript
+// キャッシュとエラー状態の管理
+const cache = {};
+const errorState = {
+  lastErrorTime: 0,
+  backoffUntil: 0,
+  consecutiveErrors: 0,
+};
+
+// バックオフ時間の計算
+function calculateBackoff(retryCount) {
+  return Math.min(
+    30 * 60 * 1000, // 最大30分
+    (10 * 60 * 1000) * Math.pow(1.5, retryCount) // 10分から始まる指数バックオフ
+  );
+}
+
+// APIリクエスト関数
+async function makeApiRequest() {
+  // バックオフチェック
+  if (Date.now() < errorState.backoffUntil) {
+    throw new Error('API requests are currently throttled');
+  }
+  
+  try {
+    const response = await fetch('/api/resource');
+    
+    if (!response.ok) {
+      if (response.status === 429 || response.status === 403) {
+        // クォータ超過エラー処理
+        errorState.consecutiveErrors++;
+        errorState.backoffUntil = Date.now() + calculateBackoff(errorState.consecutiveErrors);
+        throw new Error('Rate limit exceeded');
+      }
+      
+      throw new Error(`API error: ${response.status}`);
+    }
+    
+    // 成功したらエラーカウントをリセット
+    errorState.consecutiveErrors = 0;
+    return await response.json();
+  } catch (error) {
+    // エラーハンドリング
+    console.error('API request failed:', error);
+    throw error;
+  }
+}
+``` 

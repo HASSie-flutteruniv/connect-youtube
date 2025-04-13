@@ -93,7 +93,7 @@ const NotificationTicker: React.FC<NotificationTickerProps> = ({
 
   return (
     <div
-      className={`bg-[#f2f2f2]/95 text-gray-700 py-2 px-4 overflow-hidden h-10 flex items-center rounded-lg shadow-md ${className}`} // 固定解除し、スタイル調整
+      className={`bg-[#f2f2f2]/70 backdrop-blur-sm text-gray-700 py-2 px-4 overflow-hidden h-10 flex items-center rounded-lg shadow-md border border-white/20 ${className}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       role="region"

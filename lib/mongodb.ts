@@ -37,12 +37,13 @@ export type Room = {
 
 export type Seat = {
   _id: string;
-  room_id: string;
   position: number;
   username: string | null;
   authorId: string | null;
   task: string | null;
   enterTime: Date | null;
+  exitTime: Date | null;
+  is_active: boolean;
   autoExitScheduled: Date | null;
   profileImageUrl: string | null;
   timestamp: Date;

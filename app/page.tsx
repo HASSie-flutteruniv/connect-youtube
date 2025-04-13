@@ -9,7 +9,7 @@ import BGMPlayer from "@/components/BGMPlayer";
 import NotificationTicker, { Notification } from "@/components/NotificationTicker";
 import AnnouncementsTicker from "@/components/AnnouncementsTicker";
 import { toast } from "@/hooks/use-toast";
-import { useSeatData, RoomData, Seat } from "@/hooks/use-seat-data";
+import { RoomData } from "@/hooks/use-seat-data";
 import { useSSE, SystemMessage } from "@/hooks/use-sse";
 import { useYouTubeComments } from "@/hooks/use-youtube-comments";
 import { youtubeService } from "@/lib/api/services/youtubeService";
@@ -25,8 +25,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import VideoBackground from "@/components/VideoBackground";
 
-// 通知の最大保持数
 const MAX_NOTIFICATIONS = 20;
 
 // SSEデータの型
@@ -270,7 +270,6 @@ export default function Home() {
   }, [isMounted]); // isMounted のみに依存
 
   // フォーカスルームとチャットルームを分離
-  const focusRooms = rooms.filter(room => room.type === 'focus');
   const chatRooms = rooms.filter(room => room.type === 'chat' || !room.type);
 
   // 接続状態に応じたメッセージを表示
@@ -281,7 +280,7 @@ export default function Home() {
     switch (connectionState) {
       case 'connecting':
         return (
-          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+          <Alert className="mb-4 bg-yellow-50/70 backdrop-blur-sm border-yellow-200/50">
             <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
             <AlertTitle>接続中...</AlertTitle>
             <AlertDescription>
@@ -294,7 +293,7 @@ export default function Home() {
         );
       case 'reconnecting':
         return (
-          <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+          <Alert className="mb-4 bg-yellow-50/70 backdrop-blur-sm border-yellow-200/50">
             <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
             <AlertTitle>再接続中...</AlertTitle>
             <AlertDescription>
@@ -310,7 +309,7 @@ export default function Home() {
         );
       case 'error':
         return (
-          <Alert variant="destructive" className="mb-4">
+          <Alert variant="destructive" className="mb-4 bg-red-50/70 backdrop-blur-sm border-red-200/50">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>接続エラー</AlertTitle>
             <AlertDescription>
@@ -326,7 +325,7 @@ export default function Home() {
         );
       case 'disconnected':
         return (
-          <Alert className="mb-4 bg-gray-100 border-gray-200">
+          <Alert className="mb-4 bg-gray-100/70 backdrop-blur-sm border-gray-200/50">
             <WifiOff className="h-4 w-4 text-gray-500" />
             <AlertTitle>切断されました</AlertTitle>
             <AlertDescription>
@@ -344,7 +343,7 @@ export default function Home() {
         // 接続済みなら何も表示しない、もしくは小さな成功メッセージを表示
         if (rooms.length === 0) {
           return (
-            <Alert className="mb-4 bg-blue-50 border-blue-200">
+            <Alert className="mb-4 bg-blue-50/70 backdrop-blur-sm border-blue-200/50">
               <AlertCircle className="h-4 w-4 text-blue-500" />
               <AlertTitle>接続済み（データなし）</AlertTitle>
               <AlertDescription>
@@ -361,7 +360,7 @@ export default function Home() {
         // デフォルトケースも追加して、万が一の場合に対応
         console.warn(`[Page] Unknown connection state: ${connectionState}`);
         return (
-          <Alert className="mb-4 bg-gray-100 border-gray-200">
+          <Alert className="mb-4 bg-gray-100/70 backdrop-blur-sm border-gray-200/50">
             <AlertCircle className="h-4 w-4 text-gray-500" />
             <AlertTitle>不明な接続状態</AlertTitle>
             <AlertDescription>
@@ -373,12 +372,15 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#505762] pt-16"> {/* pt-16 はヘッダー分 */}
+    <main className="min-h-screen relative"> {/* bg-[#505762] を削除し、relative追加 */}
+      {/* 動画背景を追加 */}
+      <VideoBackground videoUrl="/mv_video.mp4" />
+      
       {/* ヘッダー */}
       <Header />
 
-      {/* メインコンテンツ (pt を削除) */}
-      <div className="container mx-auto px-4 py-4"> {/* pt-10 を削除 */}
+      {/* メインコンテンツ - z-indexを追加して動画の上に表示 */}
+      <div className="container mx-auto px-4 py-4 relative z-10 pt-16 pt-20"> {/* z-10追加 */}
         {/* 接続状態表示 - 常に表示 */}
         <div className="connection-status-area">
           {renderConnectionStatus()}
@@ -394,8 +396,8 @@ export default function Home() {
           <NotificationTicker notifications={notifications} />
         </div>
 
-        {/* 参加者情報 */}
-        <Card className="mb-4 bg-[#f2f2f2]/95 shadow-md">
+        {/* 参加者情報 - 半透明に変更 */}
+        <Card className="mb-4 bg-[#f2f2f2]/70 backdrop-blur-sm shadow-md border border-white/20">
           <div className="p-4">
             <h2 className="font-medium text-lg mb-2">現在の参加者</h2>
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -409,8 +411,8 @@ export default function Home() {
             </div>
 
             {/* プロフィール画像を表示するエリア */}
-            <div className="mt-4 flex flex-wrap gap-2"> {/* grid を flex flex-wrap に変更し、gapを調整 */}
-              <TooltipProvider> {/* TooltipProviderで囲む */}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <TooltipProvider>
                 {(() => {
                     // profileImageUrl が存在する参加者のみをフィルタリング
                     const participants = rooms.flatMap(room => room.seats?.filter(seat => seat.username && seat.profileImageUrl) || []);
@@ -445,11 +447,8 @@ export default function Home() {
           </div>
         </Card>
         
-        {/* フォーカスルーム */}
         <div className="mb-4">
-          {/* ★★★ デバッグログ追加 ★★★ */}
           {(() => {
-              // 部屋データが存在すれば表示する (isLoadingに依存しない)
               const focusRoomCondition = rooms.length > 0;
               const focusSeatsData = rooms.flatMap(room => room.seats || []);
               console.log('[Page] FocusRoom rendering condition:', focusRoomCondition);
@@ -485,13 +484,6 @@ export default function Home() {
           ))}
         </div>
       </div>
-      
-      {/* フッター */}
-      <footer className="py-6 border-t border-white/10 text-white/70">
-        <div className="container mx-auto px-4 text-center text-sm">
-          <p>© 2023 focuscraft - プライバシー・ポリシー・利用規約</p>
-        </div>
-      </footer>
     </main>
   );
 }

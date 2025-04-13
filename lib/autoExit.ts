@@ -1,4 +1,4 @@
-import { Db, ObjectId } from 'mongodb';
+import { Db } from 'mongodb';
 import { sendChatMessage, getLiveChatId } from '@/lib/youtube';
 import { messageTemplates } from '@/lib/messages';
 
@@ -25,7 +25,6 @@ export async function checkAndProcessAutoExit(
   processedCount: number;
   details: Array<{
     username: string | null;
-    roomId: string;
     position: number;
     success: boolean;
     error?: string;
@@ -35,7 +34,6 @@ export async function checkAndProcessAutoExit(
     processedCount: 0,
     details: [] as Array<{
       username: string | null;
-      roomId: string;
       position: number;
       success: boolean;
       error?: string;
@@ -51,6 +49,7 @@ export async function checkAndProcessAutoExit(
     // 期限切れの座席を検索（入室中かつ自動退室時間が現在時刻より前）
     const expiredSeats = await seatsCollection.find({
       username: { $ne: null },
+      is_active: true, // アクティブな座席のみを対象とする
       autoExitScheduled: { $lt: currentTime }
     }).toArray();
     
@@ -77,19 +76,17 @@ export async function checkAndProcessAutoExit(
     // 各座席を処理
     for (const seat of expiredSeats) {
       const username = seat.username;
-      const roomId = seat.room_id;
       const position = seat.position;
+      const roomId = 'focus-room'; // 固定値としてfocus-roomを使用
       
       try {
-        // 座席を空席に設定
+        // 座席を非アクティブに設定（退室処理）
         await seatsCollection.updateOne(
           { _id: seat._id },
           { 
             $set: { 
-              username: null, 
-              authorId: null, 
-              task: null, 
-              enterTime: null, 
+              is_active: false, // 非アクティブに設定
+              exitTime: new Date(), // 退室時間を記録
               autoExitScheduled: null,
               timestamp: new Date()
             } 
@@ -109,15 +106,13 @@ export async function checkAndProcessAutoExit(
         results.processedCount++;
         results.details.push({
           username,
-          roomId,
           position,
           success: true
         });
       } catch (error) {
-        console.error(`[AutoExit] 座席(${roomId}-${position})の自動退室処理中にエラーが発生:`, error);
+        console.error(`[AutoExit] 座席(${position})の自動退室処理中にエラーが発生:`, error);
         results.details.push({
           username,
-          roomId,
           position,
           success: false,
           error: error instanceof Error ? error.message : '不明なエラー'
@@ -133,26 +128,24 @@ export async function checkAndProcessAutoExit(
 }
 
 /**
- * 指定された部屋・位置のユーザーの自動退室時間を更新/設定する
+ * 指定された位置のユーザーの自動退室時間を更新/設定する
  * @param db MongoDB データベース接続
- * @param roomId 部屋ID
  * @param position 座席位置
  * @param hours 入室時間から何時間後に自動退室するか (デフォルト: 2時間)
  * @returns 更新結果
  */
 export async function scheduleAutoExit(
   db: Db,
-  roomId: string,
   position: number,
   hours: number = 2
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const seatsCollection = db.collection('seats');
     
-    // 座席情報を取得
+    // 座席情報を取得（アクティブな座席のみ）
     const seat = await seatsCollection.findOne({
-      room_id: roomId,
-      position: position
+      position: position,
+      is_active: true
     });
     
     if (!seat || !seat.username) {

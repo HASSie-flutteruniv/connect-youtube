@@ -324,244 +324,116 @@ export async function processCommand(
     // 指定されていない場合は、ユーザー名で識別
     const userQuery = authorId ? { authorId } : { username };
     
-    // ユーザーが既に入室済みか確認
-    const existingSeat = await seatsCollection.findOne(userQuery);
+    // 同じユーザーの既存のアクティブセッションをすべて非アクティブにする
+    if (authorId) {
+      const deactivateResult = await seatsCollection.updateMany(
+        { ...userQuery, is_active: true },
+        { 
+          $set: { 
+            is_active: false,
+            exitTime: new Date(),
+            timestamp: new Date()
+          } 
+        }
+      );
+      
+      console.log(`[Command] Deactivated ${deactivateResult.modifiedCount} existing sessions for ${username}`);
+    }
     
     const enterTime = new Date();
     
-    if (existingSeat) {
-      // 既に入室済みの場合：タスクと時間を更新
-      const updateData: Record<string, any> = { 
-        task: taskName, 
-        enterTime: enterTime, 
-        username: username, // 名前が変わっている可能性も考慮
-        authorId: authorId, // IDも更新（指定されている場合）
-        timestamp: new Date()
-      };
-      
-      // 有効なプロフィール画像URLが提供された場合のみ更新
-      if (isValidImageUrl(profileImageUrl)) {
-        updateData.profileImageUrl = profileImageUrl;
-        console.log(`[Command] Adding profile image URL to update data: ${profileImageUrl}`);
-      } else {
-        console.log(`[Command] No valid profile image URL to add to update data`);
-      }
-      
-      console.log(`[Command] Updating existing seat for ${username}:`, updateData);
-      
-      const updateResult = await seatsCollection.updateOne(
-        { _id: existingSeat._id },
-        { $set: updateData }
-      );
-      
-      console.log(`[Command] Seat update result:`, {
-        matchedCount: updateResult.matchedCount,
-        modifiedCount: updateResult.modifiedCount,
-        upsertedCount: updateResult.upsertedCount
-      });
-      
-      // 更新後の座席データを取得して確認
-      const updatedSeat = await seatsCollection.findOne({ _id: existingSeat._id });
-      console.log(`[Command] Seat after update:`, {
-        id: updatedSeat?._id.toString(),
-        username: updatedSeat?.username,
-        profileImageUrl: updatedSeat?.profileImageUrl,
-        hasProfileImage: !!updatedSeat?.profileImageUrl
-      });
-      
-      // 自動退室時間を設定
-      await scheduleAutoExit(db, existingSeat.room_id, existingSeat.position, 2);
-      
-      console.log(`[Command] Updated task for ${username} to: ${taskName}`);
-      
-      // タスク更新メッセージを送信（OAuth認証が設定されている場合のみ）
-      if (liveChatId && isOAuthConfigured) {
-        try {
-          await sendChatMessage(liveChatId, messageTemplates.taskUpdated(username, taskName));
-        } catch (error) {
-          console.warn('[Command] Failed to send message, continuing without notification:', error);
-          // メッセージ送信に失敗しても処理は続行
-        }
-      }
-      
-      // システムメッセージを保存（SSEで検知される）
-      await saveSystemMessage(`${username}さんが「${taskName}」に作業内容を変更しました`, 'info');
-      
-      return {
-        success: true,
-        action: 'update',
-        seat: {
-          roomId: existingSeat.room_id,
-          position: existingSeat.position,
-          username: username,
-          task: taskName
-        }
-      };
+    // 新しい座席を作成する
+    // 最大の座席番号を取得して次の番号を割り当て
+    const lastSeat = await seatsCollection.find().sort({ position: -1 }).limit(1).toArray();
+    const newPosition = lastSeat.length > 0 ? lastSeat[0].position + 1 : 1;
+    
+    // 新しい座席を作成
+    const newSeat: Record<string, any> = {
+      position: newPosition,
+      username: username,
+      authorId: authorId,
+      task: taskName,
+      enterTime: enterTime,
+      is_active: true,
+      exitTime: null,
+      timestamp: new Date(),
+      created_at: new Date()
+    };
+    
+    // 有効なプロフィール画像URLが提供された場合のみ設定
+    if (isValidImageUrl(profileImageUrl)) {
+      newSeat.profileImageUrl = profileImageUrl;
+      console.log(`[Command] Adding profile image URL to new created seat: ${profileImageUrl}`);
     } else {
-      // 新規入室の場合：空いている座席を探す
-      const setData: Record<string, any> = {
-        username: username,
-        authorId: authorId, // IDが指定されている場合は保存
-        task: taskName,
-        enterTime: enterTime,
-        timestamp: new Date()
-      };
-      
-      // 有効なプロフィール画像URLが提供された場合のみ設定
-      if (isValidImageUrl(profileImageUrl)) {
-        setData.profileImageUrl = profileImageUrl;
-        console.log(`[Command] Adding profile image URL to new seat data: ${profileImageUrl}`);
-      } else {
-        console.log(`[Command] No valid profile image URL to add to new seat data`);
-      }
-      
-      console.log(`[Command] Looking for an available seat with data:`, setData);
-      
-      const availableSeat = await seatsCollection.findOneAndUpdate(
-        { username: null }, // 空席を探す
-        { $set: setData },
-        { sort: { position: 1 }, returnDocument: 'after' } // position昇順で最初の空席を取得
-      );
-      
-      if (availableSeat.value) {
-        console.log(`[Command] Found and updated available seat:`, {
-          id: availableSeat.value._id.toString(),
-          username: availableSeat.value.username,
-          profileImageUrl: availableSeat.value.profileImageUrl,
-          hasProfileImage: !!availableSeat.value.profileImageUrl,
-          room_id: availableSeat.value.room_id,
-          position: availableSeat.value.position
-        });
-        
-        // 自動退室時間を設定
-        await scheduleAutoExit(db, availableSeat.value.room_id, availableSeat.value.position, 2);
-        
-        console.log(`[Command] ${username} entered seat ${availableSeat.value.position} (Task: ${taskName})`);
-        
-        // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
-        if (liveChatId && isOAuthConfigured) {
-          try {
-            await sendChatMessage(
-              liveChatId, 
-              messageTemplates.seatTaken(username, availableSeat.value.room_id, availableSeat.value.position, taskName)
-            );
-          } catch (error) {
-            console.warn('[Command] Failed to send message, continuing without notification:', error);
-            // メッセージ送信に失敗しても処理は続行
-          }
-        }
-        
-        // システムメッセージを保存（SSEで検知される）
-        await saveSystemMessage(`${username}さんが「${taskName}」で入室しました`, 'info');
-        
-        return {
-          success: true,
-          action: 'enter',
-          seat: {
-            roomId: availableSeat.value.room_id,
-            position: availableSeat.value.position,
-            username: username,
-            task: taskName
-          }
-        };
-      } else {
-        // 空席がない場合は新しい座席を作成する
-        // 最大の座席番号と部屋番号を取得
-        const lastSeat = await seatsCollection.find().sort({ position: -1 }).limit(1).toArray();
-        const lastRoomSeat = await seatsCollection.find().sort({ room_id: -1 }).limit(1).toArray();
-        
-        const newPosition = lastSeat.length > 0 ? lastSeat[0].position + 1 : 1;
-        const newRoomId = lastRoomSeat.length > 0 ? lastRoomSeat[0].room_id : 1;
-        
-        // 新しい座席を作成
-        const newSeat: Record<string, any> = {
-          position: newPosition,
-          room_id: newRoomId,
-          username: username,
-          authorId: authorId,
-          task: taskName,
-          enterTime: enterTime,
-          timestamp: new Date()
-        };
-        
-        // 有効なプロフィール画像URLが提供された場合のみ設定
-        if (isValidImageUrl(profileImageUrl)) {
-          newSeat.profileImageUrl = profileImageUrl;
-          console.log(`[Command] Adding profile image URL to new created seat: ${profileImageUrl}`);
-        } else {
-          console.log(`[Command] No valid profile image URL to add to newly created seat`);
-        }
-        
-        console.log(`[Command] Creating new seat:`, newSeat);
-        
-        const insertResult = await seatsCollection.insertOne(newSeat);
-        
-        console.log(`[Command] New seat created:`, {
-          insertedId: insertResult.insertedId.toString(),
-          acknowledged: insertResult.acknowledged
-        });
-        
-        // 作成した座席のデータを取得して確認
-        const createdSeat = await seatsCollection.findOne({ _id: insertResult.insertedId });
-        console.log(`[Command] Newly created seat data:`, {
-          id: createdSeat?._id.toString(),
-          username: createdSeat?.username,
-          profileImageUrl: createdSeat?.profileImageUrl,
-          hasProfileImage: !!createdSeat?.profileImageUrl
-        });
-        
-        // 自動退室時間を設定
-        await scheduleAutoExit(db, newRoomId, newPosition, 2);
-        
-        console.log(`[Command] Created new seat: Room ${newRoomId}, Position ${newPosition} for ${username} (Task: ${taskName})`);
-        
-        // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
-        if (liveChatId && isOAuthConfigured) {
-          try {
-            await sendChatMessage(
-              liveChatId, 
-              messageTemplates.seatTaken(username, newRoomId, newPosition, taskName)
-            );
-          } catch (error) {
-            console.warn('[Command] Failed to send message, continuing without notification:', error);
-            // メッセージ送信に失敗しても処理は続行
-          }
-        }
-        
-        // システムメッセージを保存（SSEで検知される）
-        await saveSystemMessage(`${username}さんが「${taskName}」で新しい座席を作成しました`, 'info');
-        
-        return {
-          success: true,
-          action: 'create',
-          seat: {
-            roomId: newRoomId,
-            position: newPosition,
-            username: username,
-            task: taskName,
-            id: insertResult.insertedId.toString()
-          }
-        };
+      console.log(`[Command] No valid profile image URL to add to newly created seat`);
+    }
+    
+    console.log(`[Command] Creating new seat:`, newSeat);
+    
+    const insertResult = await seatsCollection.insertOne(newSeat);
+    
+    console.log(`[Command] New seat created:`, {
+      insertedId: insertResult.insertedId.toString(),
+      acknowledged: insertResult.acknowledged
+    });
+    
+    // 作成した座席のデータを取得して確認
+    const createdSeat = await seatsCollection.findOne({ _id: insertResult.insertedId });
+    console.log(`[Command] Newly created seat data:`, {
+      id: createdSeat?._id.toString(),
+      username: createdSeat?.username,
+      profileImageUrl: createdSeat?.profileImageUrl,
+      hasProfileImage: !!createdSeat?.profileImageUrl
+    });
+    
+    // 自動退室時間を設定
+    await scheduleAutoExit(db, newPosition, 2);
+    
+    console.log(`[Command] Created new seat: Room focus-room, Position ${newPosition} for ${username} (Task: ${taskName})`);
+    
+    // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
+    if (liveChatId && isOAuthConfigured) {
+      try {
+        await sendChatMessage(
+          liveChatId, 
+          messageTemplates.seatTaken(username, 'focus-room', newPosition, taskName)
+        );
+      } catch (error) {
+        console.warn('[Command] Failed to send message, continuing without notification:', error);
+        // メッセージ送信に失敗しても処理は続行
       }
     }
+    
+    // システムメッセージを保存（SSEで検知される）
+    await saveSystemMessage(`${username}さんが「${taskName}」で入室しました`, 'info');
+    
+    return {
+      success: true,
+      action: 'create',
+      seat: {
+        roomId: 'focus-room',
+        position: newPosition,
+        username: username,
+        task: taskName,
+        id: insertResult.insertedId.toString()
+      }
+    };
   } else if (command === 'finish') {
     console.log(`[Command] /finish command execution: ${username}`);
     
-    // ユーザーIDかユーザー名で座席を検索
-    const userQuery = authorId ? { authorId } : { username };
+    // ユーザーIDかユーザー名でアクティブな座席を検索
+    const userQuery = authorId 
+      ? { authorId, is_active: true } 
+      : { username, is_active: true };
     
     try {
-      // ユーザーの座席を検索
+      // ユーザーの座席を検索し、非アクティブに設定
       const result = await seatsCollection.findOneAndUpdate(
         userQuery,
         { 
           $set: { 
-            username: null, 
-            authorId: null, 
-            task: null, 
-            enterTime: null, 
-            autoExitScheduled: null,
-            profileImageUrl: null, // プロフィール画像情報もクリア
+            is_active: false,
+            exitTime: new Date(),
             timestamp: new Date()
           } 
         },
@@ -576,7 +448,7 @@ export async function processCommand(
           try {
             await sendChatMessage(
               liveChatId, 
-              messageTemplates.seatVacated(username, result.value.room_id, result.value.position)
+              messageTemplates.seatVacated(username, 'focus-room', result.value.position)
             );
           } catch (error) {
             console.warn('[Command] Failed to send message, continuing without notification:', error);
@@ -591,7 +463,7 @@ export async function processCommand(
           success: true,
           action: 'exit',
           seat: {
-            roomId: result.value.room_id,
+            roomId: 'focus-room',
             position: result.value.position,
             previousUsername: username
           }
