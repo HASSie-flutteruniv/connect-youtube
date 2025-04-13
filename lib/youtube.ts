@@ -324,7 +324,63 @@ export async function processCommand(
     // 指定されていない場合は、ユーザー名で識別
     const userQuery = authorId ? { authorId } : { username };
     
-    // 同じユーザーの既存のアクティブセッションをすべて非アクティブにする
+    // まず、同じユーザーのアクティブなセッションがあるか確認
+    const existingSeat = await seatsCollection.findOne({
+      ...userQuery,
+      is_active: true
+    });
+
+    // タスク名が変わっているか確認
+    console.log(`[Command] Existing seat task: ${existingSeat?.task}`);
+    console.log(`[Command] Task name: ${taskName}`);
+    if (existingSeat && existingSeat.task === taskName) {
+      console.log(`[Command] Task name has changed from ${existingSeat.task} to ${taskName}`);
+      return {
+        success: true,
+        action: 'update',
+        seat: {
+          roomId: 'focus-room',
+          position: existingSeat.position,
+          username: username,
+          task: taskName,
+          id: existingSeat._id.toString()
+        }
+      };
+    }
+    
+    if (existingSeat) {
+      // 既存のアクティブセッションが見つかった場合、タスク名だけを更新
+      console.log(`[Command] Found existing active session for ${username}, updating task name only`);
+      
+      const updateResult = await seatsCollection.findOneAndUpdate(
+        { _id: existingSeat._id },
+        { 
+          $set: { 
+            task: taskName,
+            timestamp: new Date()
+          } 
+        },
+        { returnDocument: 'after' }
+      );
+      
+      // システムメッセージを保存（SSEで検知される）
+      await saveSystemMessage(`${username}さんがタスクを「${taskName}」に更新しました`, 'info');
+      
+      return {
+        success: true,
+        action: 'update',
+        seat: {
+          roomId: 'focus-room',
+          position: existingSeat.position,
+          username: username,
+          task: taskName,
+          id: existingSeat._id.toString()
+        }
+      };
+    }
+    
+    // 以下は既存のセッションが見つからない場合の処理（新規入室）
+    // 同じユーザーの既存のアクティブセッションがない場合のみ新しく作成
     if (authorId) {
       const deactivateResult = await seatsCollection.updateMany(
         { ...userQuery, is_active: true },

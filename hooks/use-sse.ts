@@ -77,6 +77,7 @@ export function useSSE<T = any>(options: SSEClientOptions): UseSSEResult<T> {
   // データメッセージハンドラ
   const handleMessage = useCallback((newData: T) => {
     setData(newData);
+    console.log('[SSE:Hook] Received data:', newData);
     optionsRef.current.onMessage?.(newData);
   }, []);
   

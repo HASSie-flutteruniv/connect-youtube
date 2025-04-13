@@ -95,15 +95,24 @@ export function formatCurrentDateTime(): string {
 export function calculateElapsedTime(startTime: Date | string | null): string {
   if (!startTime) return "0分";
   
+  console.log(`[calculateElapsedTime] Input startTime:`, startTime);
   const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
   const now = new Date();
   const elapsedMs = now.getTime() - start.getTime();
+  
+  console.log(`[calculateElapsedTime] Now:`, now);
+  console.log(`[calculateElapsedTime] Start:`, start);
+  console.log(`[calculateElapsedTime] Elapsed ms:`, elapsedMs);
   
   if (elapsedMs <= 0) return "0分";
   
   const seconds = Math.floor(elapsedMs / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
+  
+  console.log(`[calculateElapsedTime] Seconds:`, seconds);
+  console.log(`[calculateElapsedTime] Minutes:`, minutes);
+  console.log(`[calculateElapsedTime] Hours:`, hours);
   
   if (hours > 0) {
     return `${hours}時間${minutes % 60}分`;

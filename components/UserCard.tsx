@@ -41,8 +41,10 @@ export default function UserCard({ user, roomId, position }: UserCardProps) {
     // 経過時間を更新する関数
     const updateElapsedTime = () => {
       if (user.enterTime) {
+        console.log(`[UserCard] Updating elapsed time for ${user.name}. enterTime:`, user.enterTime);
         const elapsedTime = calculateElapsedTime(user.enterTime);
         const style = getElapsedTimeStyle(user.enterTime);
+        console.log(`[UserCard] Calculated elapsed time: ${elapsedTime}`);
         setDisplayTime(elapsedTime || "0分");
         setTimeStyle(style || "text-blue-400");
       }
@@ -52,7 +54,7 @@ export default function UserCard({ user, roomId, position }: UserCardProps) {
     updateElapsedTime();
     
     // 1分ごとに経過時間を更新するタイマーを設定
-    const intervalId = setInterval(updateElapsedTime, 60000); // 60秒 = 1分
+    const intervalId = setInterval(updateElapsedTime, 10000); // 10秒ごとに更新
     
     // コンポーネントのアンマウント時にタイマーをクリア
     return () => clearInterval(intervalId);

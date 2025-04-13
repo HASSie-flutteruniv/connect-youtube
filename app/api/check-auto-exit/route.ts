@@ -64,11 +64,7 @@ async function checkAndProcessAutoExit(
           { _id: seat._id },
           { 
             $set: { 
-              username: null, 
-              authorId: null, 
-              task: null, 
-              enterTime: null, 
-              autoExitScheduled: null,
+              
               timestamp: new Date()
             } 
           }

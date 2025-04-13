@@ -85,6 +85,7 @@ export default function Home() {
     console.log('[Page] handleSeatDataMessage called. Received data:', JSON.stringify(data, null, 2));
 
     if (data.rooms && Array.isArray(data.rooms)) {
+      console.log('[Page] Received data:', data);
       console.log(`[Page] Received ${data.rooms.length} rooms from SSE. Updating state...`);
       setRooms(data.rooms);
     } else if (data.error) {

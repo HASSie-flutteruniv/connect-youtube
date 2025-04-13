@@ -197,6 +197,7 @@ export async function GET() {
     // コメントごとにコマンド検出を行う
     for (const item of chatData.items || []) {
       const commentId = item.id;
+      console.log('[Comments API] コメントID:', commentId);
       const commentText = item.snippet?.displayMessage || '';
       const publishedAt = item.snippet?.publishedAt; // YouTube上の公開日時
       
@@ -228,6 +229,15 @@ export async function GET() {
       if (adminChannelId && authorId === adminChannelId) {
         console.log(`[Comments API] お知らせコメント検出: ${authorName} - ${commentText}`);
         try {
+          // コメントの重複チェック
+          const existingAnnouncement = await announcementsCollection.findOne({
+            message: commentText,
+            authorChannelId: authorId
+          });
+          if (existingAnnouncement) {
+            console.log(`[Comments API] 重複コメント: ${commentText}`);
+            continue; // 重複コメントはスキップ
+          }
           // お知らせをDBに保存
           await announcementsCollection.insertOne({
             message: commentText,
