@@ -1,4 +1,5 @@
 import React from "react";
+import Image from "next/image";
 
 interface VideoBackgroundProps {
   videoUrl: string;
@@ -17,8 +18,19 @@ export default function VideoBackground({ videoUrl }: VideoBackgroundProps) {
         <source src={videoUrl} type="video/mp4" />
         お使いのブラウザは動画タグをサポートしていません。
       </video>
-      {/* オーバーレイで動画の上に薄暗い層を追加し、UIの視認性を確保 */}
-      <div className="absolute inset-0 bg-black/40"></div>
+      
+      {/* 動画オーバーレイをグラデーションにして深みを出す */}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/40 to-black/30"></div>
+      
+      {/* スタイリッシュな背景パターン */}
+      <div 
+        className="absolute inset-0 opacity-10" 
+        style={{ 
+          backgroundImage: `radial-gradient(circle at 25px 25px, rgba(255, 255, 255, 0.2) 2%, transparent 0%), 
+                           radial-gradient(circle at 75px 75px, rgba(255, 255, 255, 0.2) 2%, transparent 0%)`,
+          backgroundSize: '100px 100px'
+        }}
+      ></div>
     </div>
   );
 } 

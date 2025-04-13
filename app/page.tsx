@@ -26,6 +26,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import VideoBackground from "@/components/VideoBackground";
+import LargeLogo from "@/components/LargeLogo";
 
 const MAX_NOTIFICATIONS = 20;
 
@@ -376,6 +377,9 @@ export default function Home() {
       {/* 動画背景を追加 */}
       <VideoBackground videoUrl="/mv_video.mp4" />
       
+      {/* 大きなロゴを背景に追加 */}
+      <LargeLogo />
+      
       {/* ヘッダー */}
       <Header />
 
@@ -474,8 +478,6 @@ export default function Home() {
           })()}
         </div>
         
-        {/* BGM */}
-        <BGMPlayer />
 
         {/* チャットルーム（非表示） */}
         <div className="hidden">

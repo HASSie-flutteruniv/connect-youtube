@@ -125,16 +125,17 @@ export default function Header() {
   const timeString = mounted ? format(currentTime, "HH:mm:ss") : "--:--:--";
 
   return (
-    <header className="fixed top-0 w-full h-16 border-b bg-background/70 backdrop-blur-md z-10">
+    <header className="fixed top-0 w-full h-16 border-b border-white/10 bg-gradient-to-r from-background/80 via-background/70 to-background/80 backdrop-blur-md z-10">
       <div className="w-full h-full flex items-center justify-between p-4">
         <div className="flex items-center gap-4">
-          <div className="relative h-48 w-48">
+          <div className="relative h-48 w-48 transform hover:scale-110 transition-all duration-300 hover:drop-shadow-[0_0_25px_rgba(255,255,255,0.3)]">
             <Image 
               src="/connect_logo.png" 
               alt="CONNECT" 
               fill
               style={{ objectFit: 'contain' }}
               priority
+              className="drop-shadow-[0_0_8px_rgba(255,255,255,0.2)]"
             />
           </div>
         </div>
