@@ -49,6 +49,8 @@ export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): Use
     try {
       console.log('[YouTubeComments] コメント取得開始');
       const response = await youtubeService.getComments();
+      console.log('[YouTubeComments] コメント取得完了');
+      console.log(response);
       
       // バックオフ状態の更新（APIからのレスポンスに基づく）
       if (response.backoff && response.remainingSeconds) {
