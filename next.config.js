@@ -13,6 +13,13 @@ const nextConfig = {
       },
     ],
   },
+  // APIルートが静的に生成されないようにする設定
+  experimental: {
+    // App Routerのサーバーサイドレンダリングを強制
+    appDir: true,
+    // 静的最適化を無効化
+    disableOptimizedLoading: true,
+  },
 };
 
 module.exports = nextConfig;

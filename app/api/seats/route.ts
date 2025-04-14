@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
 
+// このAPIルートを動的に処理するための設定
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 export async function POST(request: Request) {
   try {
     const { roomId, position, username } = await request.json();

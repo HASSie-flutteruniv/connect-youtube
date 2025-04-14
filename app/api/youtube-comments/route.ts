@@ -4,6 +4,10 @@ import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
 import { detectCommand } from '@/lib/utils';
 import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
 
+// このAPIルートを動的に処理するための設定
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 // インメモリキャッシュ（サーバー再起動時にリセットされます）
 const liveChatIdCache: Record<string, string> = {};
 // 処理済みコメントIDを保存するSet

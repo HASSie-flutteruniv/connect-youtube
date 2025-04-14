@@ -1,0 +1,24 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NETLIFY_NEXT_PLUGIN_SKIP = "true"
+  NEXT_FORCE_EDGE_RUNTIME = "false"
+  NEXT_PRIVATE_PREBUNDLED_REACT = "true"
+
+[functions]
+  # サーバーサイドレンダリングのための設定
+  node_bundler = "esbuild"
+  included_files = ["app/api/**/*"]
+  external_node_modules = ["@next/swc-*"]
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# 特にAPIルートを動的に処理するための設定
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/server"
+  status = 200
+  force = true 
