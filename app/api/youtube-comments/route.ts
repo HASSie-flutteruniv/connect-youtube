@@ -10,8 +10,6 @@ export const runtime = 'nodejs';
 
 // インメモリキャッシュ（サーバー再起動時にリセットされます）
 const liveChatIdCache: Record<string, string> = {};
-// 処理済みコメントIDを保存するSet
-const processedCommentIds = new Set<string>();
 // エラーバックオフのための状態管理
 const errorState = {
   lastErrorTime: 0,
@@ -38,6 +36,39 @@ interface ChatItem {
     channelId?: string;  // チャンネルID（ユーザー識別用）
   };
 }
+
+/**
+ * MongoDB TTLインデックスが設定済みかを確認し、未設定なら作成する
+ */
+async function ensureProcessedCommentsIndex() {
+  try {
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    const processedCommentsCollection = db.collection('processedComments');
+    
+    // インデックス情報を取得
+    const indexes = await processedCommentsCollection.listIndexes().toArray();
+    const hasTTLIndex = indexes.some(index => 
+      index.name === 'processedAt_1' && index.expireAfterSeconds !== undefined
+    );
+    
+    // TTLインデックスがなければ作成
+    if (!hasTTLIndex) {
+      console.log('[Comments API] processedCommentsコレクションにTTLインデックスを作成します');
+      await processedCommentsCollection.createIndex(
+        { processedAt: 1 }, 
+        { expireAfterSeconds: 604800, name: 'processedAt_1' } // 1週間(604800秒)後に自動削除
+      );
+      console.log('[Comments API] TTLインデックスを作成しました');
+    }
+  } catch (error) {
+    console.error('[Comments API] TTLインデックス作成エラー:', error);
+    // エラーが発生しても処理は継続
+  }
+}
+
+// アプリケーション起動時にインデックスを確認/作成
+ensureProcessedCommentsIndex();
 
 /**
  * YouTubeライブコメント取得API
@@ -197,6 +228,7 @@ export async function GET() {
     const client = await clientPromise; // MongoDBクライアントを取得
     const db = client.db('coworking'); // データベースを選択
     const announcementsCollection = db.collection('announcements'); // コレクションを選択
+    const processedCommentsCollection = db.collection('processedComments'); // 処理済みコメント用コレクション
 
     // コメントごとにコマンド検出を行う
     for (const item of chatData.items || []) {
@@ -215,14 +247,23 @@ export async function GET() {
       // 2. 既に処理済みのコメント
       // 3. BOT自身の投稿
       if (!authorName || !authorId) continue; // 投稿者情報がない場合はスキップ
-      if (processedCommentIds.has(commentId)) {
+      
+      // MongoDB から処理済みコメントを確認
+      const processedComment = await processedCommentsCollection.findOne({ commentId });
+      if (processedComment) {
         console.log(`[Comments API] スキップ: 既に処理済みのコメント (ID: ${commentId})`);
         continue;
       }
+      
       if (botChannelId && authorId === botChannelId) {
         console.log(`[Comments API] スキップ: BOT自身の投稿 (ID: ${commentId})`);
-        // BOT自身の投稿はセットに追加して今後処理しないようにする
-        processedCommentIds.add(commentId);
+        // BOT自身の投稿はDBに保存して今後処理しないようにする
+        await processedCommentsCollection.insertOne({
+          commentId,
+          authorId,
+          isBot: true,
+          processedAt: new Date()
+        });
         continue;
       }
       
@@ -251,8 +292,16 @@ export async function GET() {
             publishedAt: publishedAt ? new Date(publishedAt) : new Date(), // 日付形式に変換
             createdAt: new Date(), // サーバーでの保存日時
           });
+          
+          // 処理済みコメントとしてDBに保存
+          await processedCommentsCollection.insertOne({
+            commentId,
+            authorId,
+            isAnnouncement: true,
+            processedAt: new Date()
+          });
+          
           console.log(`[Comments API] お知らせをDBに保存しました: ${commentText}`);
-          processedCommentIds.add(commentId); // 処理済みとしてマーク
         } catch (dbError) {
           console.error('[Comments API] お知らせのDB保存エラー:', dbError);
           // エラーが発生しても処理を続行する（他のコメントに影響を与えない）
@@ -279,19 +328,17 @@ export async function GET() {
         
         console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
         
-        // 処理済みとしてマーク
-        processedCommentIds.add(commentId);
+        // 処理済みコメントとしてDBに保存
+        await processedCommentsCollection.insertOne({
+          commentId,
+          authorId,
+          command,
+          taskName,
+          commentText,
+          processedAt: new Date()
+        });
       }
-      // コマンドがない通常のコメントはここでは何もせず、processedCommentIdsにも追加しない
-      // （必要なら後で処理済みにするなどのロジックを追加可能）
-    }
-    
-    // 処理済みID数が多くなりすぎないように、最新の1000件だけを保持
-    if (processedCommentIds.size > 1000) {
-      const idsToKeep = Array.from(processedCommentIds).slice(-1000);
-      processedCommentIds.clear();
-      idsToKeep.forEach(id => processedCommentIds.add(id));
-      console.log(`[Comments API] 処理済みIDキャッシュをクリーンアップしました (残り: ${processedCommentIds.size}件)`);
+      // コマンドがない通常のコメントはここでは何もせず、DBにも追加しない
     }
     
     // コメントデータを整形 (UI表示用)
