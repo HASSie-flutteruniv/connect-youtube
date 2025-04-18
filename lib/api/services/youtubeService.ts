@@ -42,8 +42,9 @@ export class YouTubeService {
    * YouTubeのコメントとコマンドを取得
    * @returns コマンドとポーリング情報
    */
-  async getComments(): Promise<YouTubeCommentsResponse> {
-    const response = await apiClient.get<YouTubeCommentsResponse>('/api/youtube-comments');
+  async getComments(videoId?: string): Promise<YouTubeCommentsResponse> {
+    const url = videoId ? `/api/youtube-comments?videoId=${encodeURIComponent(videoId)}` : '/api/youtube-comments';
+    const response = await apiClient.get<YouTubeCommentsResponse>(url);
     
     if (response.error) {
       console.error('[YouTubeService] Comments fetch error:', response.error);

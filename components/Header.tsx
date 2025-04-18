@@ -91,9 +91,10 @@ const determineTimeModeFromCurrentTime = (now: Date): {mode: string, timeLeft: n
   return { mode: "WORK", timeLeft: timeLeftSec };
 };
 
-export default function Header() {
+export default function Header({ videoId, onVideoIdChange }: { videoId: string; onVideoIdChange: (id: string) => void }) {
   const [mounted, setMounted] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [inputVideoId, setInputVideoId] = useState(videoId || "");
   
   // ポモドーロタイマーの状態を取得
   const {
@@ -125,7 +126,7 @@ export default function Header() {
   const timeString = mounted ? format(currentTime, "HH:mm:ss") : "--:--:--";
 
   return (
-    <header className="fixed top-0 w-full h-16 border-b border-white/10 bg-gradient-to-r from-background/80 via-background/70 to-background/80 backdrop-blur-md z-10">
+    <header className="fixed top-0 w-full h-16 border-b border-white/10 bg-gradient-to-r from-background/80 via-background/70 to-background/80 backdrop-blur-md z-[100]">
       <div className="w-full h-full flex items-center justify-between p-4">
         <div className="flex items-center gap-4">
           <div className="relative h-48 w-48 transform hover:scale-110 transition-all duration-300 hover:drop-shadow-[0_0_25px_rgba(255,255,255,0.3)]">
@@ -141,6 +142,30 @@ export default function Header() {
         </div>
         
         <div className="flex items-center gap-4">
+          {/* YouTube動画ID入力欄 */}
+          <form
+            onSubmit={e => {
+              e.preventDefault();
+              onVideoIdChange(inputVideoId.trim());
+            }}
+            className="flex items-center gap-2 relative z-[101]"
+          >
+            <input
+              type="text"
+              value={inputVideoId}
+              onChange={e => setInputVideoId(e.target.value)}
+              placeholder="YouTube動画ID"
+              className="border border-gray-300 rounded px-2 py-1 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-md pointer-events-auto"
+            />
+            <button
+              type="submit"
+              className="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm shadow-md pointer-events-auto"
+              disabled={!inputVideoId.trim() || inputVideoId.trim() === videoId}
+            >
+              設定
+            </button>
+          </form>
+          
           {/* ポモドーロタイマー情報 */}
           <div className="hidden md:flex items-center gap-2">
             <Badge 

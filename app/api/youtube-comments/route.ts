@@ -42,7 +42,7 @@ interface ChatItem {
  * YouTubeライブコメント取得API
  * コメント取得のみを担当し、コマンド実行（DB更新）は行わない
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     // 現在時刻が backoffUntil を下回る場合はエラーを返す（APIリクエスト抑制）
     const now = Date.now();
@@ -57,15 +57,21 @@ export async function GET() {
       }, { status: 429 });
     }
 
-    // 環境変数から動画IDを取得
-    console.log('[Comments API] コメント取得開始');
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
+    // クエリパラメータからvideoIdを取得
+    const { searchParams } = new URL(request.url);
+    const videoId = searchParams.get('videoId') || process.env.YOUTUBE_VIDEO_ID;
+    
     // BOTのチャンネルID（環境変数から取得または直接指定）
     const botChannelId = process.env.YOUTUBE_BOT_CHANNEL_ID || '';
     const adminChannelId = process.env.ADMIN_YOUTUBE_CHANNEL_ID; // 運営者IDを取得
     
+    // videoIdチェック
     if (!videoId) {
-      return NextResponse.json({ error: 'YOUTUBE_VIDEO_IDが設定されていません' }, { status: 400 });
+      console.log('[Comments API] videoIdが指定されていません');
+      return NextResponse.json({ 
+        error: 'YouTube動画IDを入力してください', 
+        commands: [] 
+      }, { status: 400 });
     }
     
     // キャッシュからliveChatIdを取得
@@ -88,7 +94,10 @@ export async function GET() {
           errorState.consecutiveErrors = 0;
           errorState.quotaExceeded = false;
         } else {
-          return NextResponse.json({ error: 'ライブチャットIDが取得できませんでした' }, { status: 404 });
+          return NextResponse.json({ 
+            error: 'ライブチャットIDが取得できませんでした。動画IDが正しいか、ライブ配信中か確認してください。',
+            commands: []
+          }, { status: 404 });
         }
       } catch (error: any) {
         // API呼び出しに失敗した場合のエラーハンドリング

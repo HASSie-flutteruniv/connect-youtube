@@ -185,6 +185,7 @@ postcss.config.js
 refactoring-tasks.md
 tailwind.config.ts
 tsconfig.json
+youtube-comment-fetching.md
 </directory_structure>
 
 <files>
@@ -869,44 +870,6 @@ function calculateDuration(enterTime: Date | null, exitTime: Date | null): strin
     return `${hours}時間${minutes > 0 ? ` ${minutes}分` : ''}`;
   } else {
     return `${minutes}分`;
-  }
-}
-</file>
-
-<file path="app/api/seats/route.ts">
-import { NextResponse } from 'next/server';
-import clientPromise from '@/lib/mongodb';
-
-export async function POST(request: Request) {
-  try {
-    const { roomId, position, username } = await request.json();
-    const client = await clientPromise;
-    const db = client.db('coworking');
-
-    const result = await db.collection('seats').findOneAndUpdate(
-      { room_id: roomId, position: position },
-      {
-        $set: {
-          username: username,
-          timestamp: new Date()
-        }
-      },
-      { returnDocument: 'after' }
-    );
-
-    if (!result.value) {
-      return NextResponse.json(
-        { error: 'Seat not found' },
-        { status: 404 }
-      );
-    }
-
-    return NextResponse.json(result.value);
-  } catch (error) {
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
   }
 }
 </file>
@@ -7462,177 +7425,6 @@ function useToast() {
 export { useToast, toast };
 </file>
 
-<file path="hooks/use-youtube-comments.ts">
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { youtubeService } from '@/lib/api/services/youtubeService';
-import { toast } from '@/hooks/use-toast';
-import type { Command } from '@/lib/types';
-
-interface UseYouTubeCommentsOptions {
-  enabled?: boolean;
-  onCommandsDetected?: (commands: Command[]) => Promise<void>;
-}
-
-interface UseYouTubeCommentsResult {
-  isProcessingCommand: boolean;
-  startPolling: () => void;
-  stopPolling: () => void;
-  isPolling: boolean;
-}
-
-/**
- * YouTubeコメント取得とコマンド処理のためのカスタムフック
- */
-export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): UseYouTubeCommentsResult {
-  const { enabled = true, onCommandsDetected } = options;
-  
-  const [isProcessingCommand, setIsProcessingCommand] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
-  
-  const processingCommandsRef = useRef<Set<string>>(new Set());
-  const timeoutIdRef = useRef<NodeJS.Timeout | null>(null);
-  const isPollingRef = useRef(false);
-  
-  // バックオフ状態の管理
-  const backoffStateRef = useRef({
-    isActive: false,
-    endTime: 0,
-    pollingInterval: 10000 // 初期値10秒
-  });
-  
-  /**
-   * YouTubeコメントを取得し、コマンドを処理する
-   */
-  const fetchComments = useCallback(async () => {
-    // バックオフ中であればスキップ
-    const now = Date.now();
-    if (backoffStateRef.current.isActive && now < backoffStateRef.current.endTime) {
-      console.log(`[YouTubeComments] バックオフ中 (残り ${Math.ceil((backoffStateRef.current.endTime - now) / 1000)} 秒)`);
-      return;
-    }
-    
-    try {
-      console.log('[YouTubeComments] コメント取得開始');
-      const response = await youtubeService.getComments();
-      
-      // バックオフ状態の更新（APIからのレスポンスに基づく）
-      if (response.backoff && response.remainingSeconds) {
-        backoffStateRef.current.isActive = true;
-        backoffStateRef.current.endTime = now + (response.remainingSeconds * 1000);
-        console.log(`[YouTubeComments] API制限により${response.remainingSeconds}秒間バックオフ設定`);
-        
-        toast({
-          title: 'YouTube API制限',
-          description: `APIリクエスト制限のため、コメント取得を一時停止します (${Math.ceil(response.remainingSeconds / 60)}分間)`,
-          variant: 'destructive',
-        });
-        
-        return;
-      }
-      
-      // APIからの推奨ポーリング間隔があれば使用
-      if (response.pollingIntervalMillis && response.pollingIntervalMillis > 0) {
-        backoffStateRef.current.pollingInterval = Math.max(5000, response.pollingIntervalMillis);
-        console.log(`[YouTubeComments] ポーリング間隔を ${backoffStateRef.current.pollingInterval / 1000} 秒に調整`);
-      }
-      
-      // バックオフ状態をリセット（成功したため）
-      if (backoffStateRef.current.isActive) {
-        backoffStateRef.current.isActive = false;
-        backoffStateRef.current.endTime = 0;
-        console.log('[YouTubeComments] バックオフ状態を解除');
-      }
-      
-      // コマンドを処理（あれば）
-      if (response.commands && Array.isArray(response.commands) && response.commands.length > 0) {
-        console.log(`[YouTubeComments] ${response.commands.length}件のコマンドを検出`);
-        setIsProcessingCommand(true);
-        
-        if (onCommandsDetected) {
-          await onCommandsDetected(response.commands);
-        }
-        
-        setIsProcessingCommand(false);
-      }
-    } catch (error) {
-      console.error('[YouTubeComments] 取得エラー:', error);
-      
-      toast({
-        title: 'YouTubeコメント取得エラー',
-        description: error instanceof Error ? error.message : '不明なエラーが発生しました',
-        variant: 'destructive',
-      });
-    }
-  }, [onCommandsDetected]);
-  
-  /**
-   * 次回のポーリングをスケジュール
-   */
-  const scheduleNextFetch = useCallback(() => {
-    if (!isPollingRef.current) return;
-    
-    timeoutIdRef.current = setTimeout(() => {
-      fetchComments().finally(() => {
-        if (isPollingRef.current) {
-          scheduleNextFetch();
-        }
-      });
-    }, backoffStateRef.current.pollingInterval);
-  }, [fetchComments]);
-  
-  /**
-   * ポーリングを開始
-   */
-  const startPolling = useCallback(() => {
-    if (isPollingRef.current) return;
-    
-    console.log('[YouTubeComments] ポーリング開始');
-    isPollingRef.current = true;
-    setIsPolling(true);
-    
-    fetchComments().finally(() => {
-      if (isPollingRef.current) {
-        scheduleNextFetch();
-      }
-    });
-  }, [fetchComments, scheduleNextFetch]);
-  
-  /**
-   * ポーリングを停止
-   */
-  const stopPolling = useCallback(() => {
-    console.log('[YouTubeComments] ポーリング停止');
-    isPollingRef.current = false;
-    setIsPolling(false);
-    
-    if (timeoutIdRef.current) {
-      clearTimeout(timeoutIdRef.current);
-      timeoutIdRef.current = null;
-    }
-  }, []);
-  
-  // enabledフラグに基づいてポーリングを制御
-  useEffect(() => {
-    if (enabled) {
-      startPolling();
-    } else {
-      stopPolling();
-    }
-    
-    return () => {
-      stopPolling();
-    };
-  }, [enabled, startPolling, stopPolling]);
-  
-  return { 
-    isProcessingCommand,
-    startPolling, 
-    stopPolling,
-    isPolling
-  };
-}
-</file>
-
 <file path="lib/api/clients/apiClient.ts">
 /**
  * APIレスポンスの共通型定義
@@ -8107,146 +7899,6 @@ export interface SystemMessage {
 export interface SSEData {
   rooms: RoomData[];
   error?: string;
-}
-</file>
-
-<file path="lib/client-utils.ts">
-import { AutoExitStatus } from './types';
-
-/**
- * 自動退室のステータスを取得する（クライアント側で安全に使用できる）
- * @param scheduledTime 自動退室時間
- * @returns 自動退室状態の情報
- */
-export function getAutoExitStatus(scheduledTime: Date | string | null): AutoExitStatus {
-  if (!scheduledTime) {
-    return {
-      isScheduled: false,
-      scheduledTime: null,
-      remainingTime: null,
-      formattedTime: null
-    };
-  }
-
-  const autoExitTime = typeof scheduledTime === 'string' 
-    ? new Date(scheduledTime) 
-    : scheduledTime;
-  
-  const now = new Date();
-  const remainingMs = autoExitTime.getTime() - now.getTime();
-
-  // 既に期限切れの場合
-  if (remainingMs <= 0) {
-    return {
-      isScheduled: true,
-      scheduledTime: autoExitTime,
-      remainingTime: 0,
-      formattedTime: '時間切れ'
-    };
-  }
-
-  return {
-    isScheduled: true,
-    scheduledTime: autoExitTime,
-    remainingTime: remainingMs,
-    formattedTime: formatRemainingTime(remainingMs)
-  };
-}
-
-/**
- * 残り時間をフォーマットする
- * @param milliseconds 残りミリ秒
- * @returns フォーマットされた時間文字列 (例: "1時間23分")
- */
-export function formatRemainingTime(milliseconds: number): string {
-  if (milliseconds <= 0) {
-    return '時間切れ';
-  }
-
-  const seconds = Math.floor(milliseconds / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  
-  if (hours > 0) {
-    const remainingMinutes = minutes % 60;
-    if (remainingMinutes > 0) {
-      return `${hours}時間${remainingMinutes}分`;
-    }
-    return `${hours}時間`;
-  } else if (minutes > 0) {
-    const remainingSeconds = seconds % 60;
-    if (remainingSeconds > 0 && minutes < 10) {
-      // 10分未満なら秒も表示
-      return `${minutes}分${remainingSeconds}秒`;
-    }
-    return `${minutes}分`;
-  } else {
-    return `${seconds}秒`;
-  }
-}
-
-/**
- * 現在の日付と時刻をフォーマットする
- * @returns フォーマットされた日時文字列 (例: "2023/04/06 15:30")
- */
-export function formatCurrentDateTime(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  
-  return `${year}/${month}/${day} ${hours}:${minutes}`;
-}
-
-/**
- * 経過時間を計算する
- * @param startTime 開始時間
- * @returns フォーマットされた経過時間 (例: "1時間23分")
- */
-export function calculateElapsedTime(startTime: Date | string | null): string {
-  if (!startTime) return "0分";
-  
-  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
-  const now = new Date();
-  const elapsedMs = now.getTime() - start.getTime();
-  
-  if (elapsedMs <= 0) return "0分";
-  
-  const seconds = Math.floor(elapsedMs / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  
-  if (hours > 0) {
-    return `${hours}時間${minutes % 60}分`;
-  } else {
-    return `${minutes}分`;
-  }
-}
-
-/**
- * 経過時間に応じたスタイルを取得する
- * @param startTime 開始時間
- * @returns CSSクラス名
- */
-export function getElapsedTimeStyle(startTime: Date | string | null): string {
-  if (!startTime) return "text-blue-400";
-  
-  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
-  const now = new Date();
-  const elapsedMs = now.getTime() - start.getTime();
-  const minutes = Math.floor(elapsedMs / (1000 * 60));
-  
-  if (minutes >= 120) { // 2時間以上
-    return "text-red-500";
-  } else if (minutes >= 60) { // 1時間以上
-    return "text-orange-500";
-  } else if (minutes >= 30) { // 30分以上
-    return "text-amber-500";
-  } else {
-    return "text-blue-400";
-  }
 }
 </file>
 
@@ -9072,6 +8724,135 @@ export default config;
 }
 </file>
 
+<file path="youtube-comment-fetching.md">
+# YouTubeライブコメント取得の仕組み
+
+## 概要
+
+当プロジェクトでは、YouTubeのライブ配信からリアルタイムでコメントを取得し、特定のコマンド（例：`/work`）を検出して処理する機能を実装しています。この文書では、その技術的な実装と仕組みについて解説します。
+
+## 1. 技術スタック
+
+- **YouTube Data API v3**：ライブチャットメッセージの取得とBOT投稿に使用
+- **Next.js API Routes**：サーバーサイドでYouTube APIの呼び出しを行うエンドポイント
+- **MongoDB**：検出したコマンドや座席情報の保存に使用
+- **React Hooks**：フロントエンドでのコメント取得とポーリング処理
+
+## 2. コメント取得の流れ
+
+### 2.1 サーバーサイド実装
+
+1. **ライブチャットIDの取得**
+   - 動画IDから`getLiveChatId`関数を使って、ライブチャットIDを取得
+   - パフォーマンス向上のためライブチャットIDをメモリ内にキャッシュ
+
+2. **コメントの取得**
+   - `getLiveChatMessages`関数でYouTube APIを呼び出し
+   - 認証にはAPI Keyを使用（環境変数から取得）
+   - `snippet`と`authorDetails`の両方のパートを取得してコメント情報を完全に取得
+
+3. **コマンド検出とフィルタリング**
+   - 取得したコメントから特定のコマンドパターンを検出
+   - BOT自身のコメントや既に処理済みのコメントをスキップ
+   - 運営者コメントは特別に処理（お知らせとしてDBに保存）
+
+4. **レート制限対策**
+   - YouTube APIのクォータ制限に対応するためのバックオフメカニズム実装
+   - エラー発生時には指数バックオフで再試行間隔を延長
+   - 連続エラーやクォータ超過時は一定時間APIリクエストを抑制
+
+### 2.2 クライアントサイド実装
+
+1. **カスタムフック（useYouTubeComments）**
+   - コメント取得とコマンド処理を統合したReact Hook
+   - 定期的なポーリングでサーバーAPIを呼び出し
+   - バックオフ状態の管理と動的なポーリング間隔の調整
+
+2. **ポーリング制御**
+   - `startPolling`と`stopPolling`関数でポーリングを制御
+   - API推奨のポーリング間隔（pollingIntervalMillis）に従って調整
+   - エラー発生時のバックオフ処理
+
+## 3. コアコンポーネント
+
+### 3.1 YouTube API関連（lib/youtube.ts）
+
+```typescript
+// ライブチャットIDを取得
+export async function getLiveChatId(videoId: string): Promise<string> {
+  const response = await youtubeWithApiKey.videos.list({
+    part: ['liveStreamingDetails'],
+    id: [videoId]
+  });
+  // ...ライブチャットIDの抽出とエラーハンドリング...
+}
+
+// ライブチャットメッセージを取得
+export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
+  const response = await youtubeWithApiKey.liveChatMessages.list({
+    part: ['snippet', 'authorDetails'],
+    liveChatId,
+    pageToken: pageToken || undefined,
+    maxResults: 100
+  });
+  // ...レスポンス処理とエラーハンドリング...
+}
+```
+
+### 3.2 APIエンドポイント（app/api/youtube-comments/route.ts）
+
+```typescript
+export async function GET() {
+  // 1. バックオフ状態のチェック
+  // 2. ライブチャットIDの取得（キャッシュまたはAPI）
+  // 3. コメントデータの取得
+  // 4. コマンド検出とフィルタリング
+  // 5. レスポンス返却
+}
+```
+
+### 3.3 クライアント側フック（hooks/use-youtube-comments.ts）
+
+```typescript
+export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): UseYouTubeCommentsResult {
+  // 状態管理
+  // コメント取得関数
+  // ポーリング制御関数
+  // ...
+}
+```
+
+## 4. エラーハンドリングと安定性対策
+
+1. **メモリ内キャッシュの最適化**
+   - 処理済みコメントIDのキャッシュを定期的にクリーンアップ（最新1000件のみ保持）
+   - ライブチャットIDをメモリ内キャッシュとして保存し、API呼び出しを削減
+
+2. **エラー状態の管理**
+   - 連続エラー発生時の指数バックオフ
+   - クォータ超過時の長時間バックオフ（10分〜30分）
+   - エラー種別に応じた適切なステータスコードの返却
+
+3. **動的なポーリング間隔**
+   - YouTube APIからの推奨ポーリング間隔に従って動的に調整
+   - バックオフ状態に応じたポーリング頻度の調整
+
+## 5. セキュリティと制限事項
+
+1. **API認証**
+   - コメント取得には単純なAPI Keyを使用
+   - メッセージ送信（BOT投稿）にはOAuth2認証を使用
+
+2. **環境変数**
+   - YouTube API Key
+   - OAuth2認証情報（クライアントID、シークレット、リダイレクトURL、リフレッシュトークン）
+   - ライブ配信の動画ID
+
+3. **API制限**
+   - YouTube Data APIの日次クォータ制限を考慮した設計
+   - レート制限を回避するためのバックオフメカニズム
+</file>
+
 <file path=".cursor/rules/api-best-practices.mdc">
 # API利用のベストプラクティス
 
@@ -9201,185 +8982,6 @@ async function makeApiRequest() {
 ```
 </file>
 
-<file path="app/api/check-auto-exit/route.ts">
-import { NextResponse } from 'next/server';
-import clientPromise from '@/lib/mongodb';
-import { Db, ObjectId } from 'mongodb';
-import { getLiveChatId, sendChatMessage } from '@/lib/youtube';
-import { messageTemplates } from '@/lib/messages';
-import { AutoExitProcessResult } from '@/lib/types';
-
-/**
- * 自動退室が必要なユーザーをチェックして退室処理を行う
- * @param db MongoDB データベース接続
- * @param sendNotification YouTube通知メッセージを送信するかどうか
- * @returns 処理された座席の数と詳細情報
- */
-async function checkAndProcessAutoExit(
-  db: Db,
-  sendNotification: boolean = false
-): Promise<AutoExitProcessResult> {
-  const results: AutoExitProcessResult = {
-    processedCount: 0,
-    details: [] 
-  };
-
-  try {
-    const seatsCollection = db.collection('seats');
-    const currentTime = new Date();
-    
-    console.log(`[AutoExit] ${currentTime.toISOString()}に自動退室チェックを実行`);
-    
-    // 期限切れの座席を検索（入室中かつ自動退室時間が現在時刻より前）
-    const expiredSeats = await seatsCollection.find({
-      username: { $ne: null },
-      autoExitScheduled: { $lt: currentTime }
-    }).toArray();
-    
-    if (expiredSeats.length === 0) {
-      console.log('[AutoExit] 期限切れの座席はありませんでした');
-      return results;
-    }
-    
-    console.log(`[AutoExit] ${expiredSeats.length}件の期限切れ座席を処理します`);
-    
-    // YouTube通知のための準備
-    let liveChatId: string | null = null;
-    if (sendNotification) {
-      const videoId = process.env.YOUTUBE_VIDEO_ID;
-      if (videoId) {
-        try {
-          liveChatId = await getLiveChatId(videoId);
-        } catch (error) {
-          console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました:', error);
-        }
-      }
-    }
-    
-    // 各座席を処理
-    for (const seat of expiredSeats) {
-      const username = seat.username;
-      const roomId = seat.room_id;
-      const position = seat.position;
-      
-      try {
-        // 座席を空席に設定
-        await seatsCollection.updateOne(
-          { _id: seat._id },
-          { 
-            $set: { 
-              username: null, 
-              authorId: null, 
-              task: null, 
-              enterTime: null, 
-              autoExitScheduled: null,
-              timestamp: new Date()
-            } 
-          }
-        );
-        
-        console.log(`[AutoExit] ${username}を自動退室しました (部屋: ${roomId}, 座席: ${position})`);
-        
-        // 自動退室メッセージをYouTubeチャットに送信（設定されている場合）
-        if (sendNotification && liveChatId && username) {
-          await sendChatMessage(
-            liveChatId, 
-            messageTemplates.autoExited(username, roomId, position)
-          );
-        }
-        
-        results.processedCount++;
-        results.details.push({
-          username,
-          roomId,
-          position,
-          success: true
-        });
-      } catch (error) {
-        console.error(`[AutoExit] 座席(${roomId}-${position})の自動退室処理中にエラーが発生:`, error);
-        results.details.push({
-          username,
-          roomId,
-          position,
-          success: false,
-          error: error instanceof Error ? error.message : '不明なエラー'
-        });
-      }
-    }
-    
-    return results;
-  } catch (error) {
-    console.error('[AutoExit] 自動退室処理全体でエラーが発生しました:', error);
-    throw error;
-  }
-}
-
-/**
- * POST /api/check-auto-exit
- * 自動退室チェックを実行するAPIエンドポイント
- */
-export async function POST(request: Request) {
-  console.log('[API] 自動退室チェックリクエストを受信');
-  
-  try {
-    // リクエストボディを解析
-    const { sendNotification = false } = await request.json();
-    
-    // MongoDBに接続
-    const client = await clientPromise;
-    const db = client.db('coworking');
-    
-    // 自動退室チェックを実行
-    const result = await checkAndProcessAutoExit(db, sendNotification);
-    
-    return NextResponse.json({
-      success: true, 
-      processedCount: result.processedCount,
-      details: result.details
-    });
-    
-  } catch (error) {
-    console.error('[API] 自動退室チェック中にエラーが発生:', error);
-    
-    return NextResponse.json(
-      { error: '自動退室チェックに失敗しました', details: (error as Error).message },
-      { status: 500 }
-    );
-  }
-}
-
-/**
- * GET /api/check-auto-exit
- * システムからの定期実行用エンドポイント
- */
-export async function GET() {
-  console.log('[API] 自動退室チェックのGETリクエストを受信 (システム実行)');
-  
-  try {
-    // MongoDBに接続
-    const client = await clientPromise;
-    const db = client.db('coworking');
-    
-    // 自動退室チェックを実行（通知送信は有効）
-    const result = await checkAndProcessAutoExit(db, true);
-    
-    return NextResponse.json({
-      success: true, 
-      processedCount: result.processedCount,
-      details: result.details
-    });
-    
-  } catch (error) {
-    console.error('[API] 自動退室チェック中にエラーが発生:', error);
-    
-    return NextResponse.json(
-      { error: '自動退室チェックに失敗しました', details: (error as Error).message },
-      { status: 500 }
-    );
-  }
-}
-</file>
-
 <file path="app/api/commands/route.ts">
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
@@ -9446,6 +9048,48 @@ export async function POST(request: Request) {
     
     return NextResponse.json(
       { error: 'Failed to execute command', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/seats/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+
+// このAPIルートを動的に処理するための設定
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+export async function POST(request: Request) {
+  try {
+    const { roomId, position, username } = await request.json();
+    const client = await clientPromise;
+    const db = client.db('coworking');
+
+    const result = await db.collection('seats').findOneAndUpdate(
+      { room_id: roomId, position: position },
+      {
+        $set: {
+          username: username,
+          timestamp: new Date()
+        }
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!result.value) {
+      return NextResponse.json(
+        { error: 'Seat not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(result.value);
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }
@@ -9979,191 +9623,177 @@ export function useSeatData(): UseSeatDataResult {
 }
 </file>
 
-<file path="hooks/use-sse.ts">
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { SSEClient, SSEClientOptions } from '@/lib/api/sse/sseClient';
-import { SSEConnectionState, SystemMessage } from '@/lib/api/sse/sseTypes';
+<file path="hooks/use-youtube-comments.ts">
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { youtubeService } from '@/lib/api/services/youtubeService';
+import { toast } from '@/hooks/use-toast';
+import type { Command } from '@/lib/types';
 
-interface UseSSEResult<T> {
-  data: T | null;
-  connectionState: SSEConnectionState;
-  lastSystemMessage: SystemMessage | null;
-  connect: () => void;
-  disconnect: () => void;
-  isReconnecting: boolean;
-  retryCount: number;
+interface UseYouTubeCommentsOptions {
+  enabled?: boolean;
+  onCommandsDetected?: (commands: Command[]) => Promise<void>;
+}
+
+interface UseYouTubeCommentsResult {
+  isProcessingCommand: boolean;
+  startPolling: () => void;
+  stopPolling: () => void;
+  isPolling: boolean;
 }
 
 /**
- * Server-Sent Events (SSE) のカスタムフック
- * 指数バックオフによる再接続ロジックとエラーハンドリングを実装
+ * YouTubeコメント取得とコマンド処理のためのカスタムフック
  */
-export function useSSE<T = any>(options: SSEClientOptions): UseSSEResult<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [connectionState, setConnectionState] = useState<SSEConnectionState>('connecting');
-  const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
-  const [isReconnecting, setIsReconnecting] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
+export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): UseYouTubeCommentsResult {
+  const { enabled = true, onCommandsDetected } = options;
   
-  const clientRef = useRef<SSEClient | null>(null);
-  // オプションへの安定参照
-  const optionsRef = useRef<SSEClientOptions>(options);
-  const isFirstRenderRef = useRef(true);
+  const [isProcessingCommand, setIsProcessingCommand] = useState(false);
+  const [isPolling, setIsPolling] = useState(false);
   
-  // オプションの更新
-  useEffect(() => {
-    // 初回レンダリング時はスキップ（マウント時に接続するためのuseEffectに任せる）
-    if (isFirstRenderRef.current) {
-      console.log('[SSE:Hook] First render, skipping options update');
-      isFirstRenderRef.current = false;
+  const processingCommandsRef = useRef<Set<string>>(new Set());
+  const timeoutIdRef = useRef<NodeJS.Timeout | null>(null);
+  const isPollingRef = useRef(false);
+  
+  // バックオフ状態の管理
+  const backoffStateRef = useRef({
+    isActive: false,
+    endTime: 0,
+    pollingInterval: 10000 // 初期値10秒
+  });
+  
+  /**
+   * YouTubeコメントを取得し、コマンドを処理する
+   */
+  const fetchComments = useCallback(async () => {
+    // バックオフ中であればスキップ
+    const now = Date.now();
+    if (backoffStateRef.current.isActive && now < backoffStateRef.current.endTime) {
+      console.log(`[YouTubeComments] バックオフ中 (残り ${Math.ceil((backoffStateRef.current.endTime - now) / 1000)} 秒)`);
       return;
     }
     
-    // オプションの変更が本質的でない場合はスキップ
-    const isSignificantChange = (
-      options.endpoint !== optionsRef.current.endpoint ||
-      options.maxRetries !== optionsRef.current.maxRetries ||
-      options.initialBackoffDelay !== optionsRef.current.initialBackoffDelay ||
-      options.maxBackoffDelay !== optionsRef.current.maxBackoffDelay
-    );
-    
-    if (!isSignificantChange) {
-      console.log('[SSE:Hook] Options update is not significant, keeping current connection');
-      // 参照だけ更新
-      optionsRef.current = options;
-      return;
-    }
-    
-    console.log('[SSE:Hook] Significant options update detected, updating connection');
-    optionsRef.current = options;
-    
-    // オプションが変更された場合は再接続
-    if (clientRef.current && 
-        clientRef.current.state === 'connected' && 
-        isSignificantChange) {
-      console.log('[SSE:Hook] Options changed while connected, reconnecting');
-      if (clientRef.current) {
-        clientRef.current.disconnect();
-        clientRef.current = null;
-      }
+    try {
+      console.log('[YouTubeComments] コメント取得開始');
+      const response = await youtubeService.getComments();
+      console.log('[YouTubeComments] コメント取得完了');
+      console.log(response);
       
-      // 少し遅延させて再接続
-      setTimeout(() => {
-        if (!clientRef.current) {
-          connect();
-        }
-      }, 100);
-    }
-  }, [options]); // options変更時のみ実行
-  
-  // データメッセージハンドラ
-  const handleMessage = useCallback((newData: T) => {
-    setData(newData);
-    optionsRef.current.onMessage?.(newData);
-  }, []);
-  
-  // システムメッセージハンドラ
-  const handleSystemMessage = useCallback((message: SystemMessage) => {
-    setLastSystemMessage(message);
-    optionsRef.current.onSystemMessage?.(message);
-  }, []);
-  
-  // 接続状態の監視と更新
-  const updateConnectionState = useCallback((state: SSEConnectionState) => {
-    setConnectionState(state);
-    if (state === 'reconnecting') {
-      setIsReconnecting(true);
-    } else if (state === 'connected') {
-      setIsReconnecting(false);
-    }
-  }, []);
-  
-  // 切断メソッド - 先に定義して connect 内で使用できるようにする
-  const disconnect = useCallback(() => {
-    console.log('[SSE:Hook] Disconnecting from SSE endpoint');
-    if (clientRef.current) {
-      clientRef.current.disconnect();
-      clientRef.current = null; // 確実に参照をクリアする
-    }
-  }, []);
-  
-  // 接続メソッド
-  const connect = useCallback(() => {
-    console.log('[SSE:Hook] Connecting to SSE endpoint');
-    
-    // 既存の接続がある場合は状態を確認
-    if (clientRef.current) {
-      // 既に接続中または接続処理中の場合は何もしない
-      if (clientRef.current.state === 'connected' || 
-          clientRef.current.state === 'connecting' || 
-          clientRef.current.state === 'reconnecting') {
-        console.log(`[SSE:Hook] Already in state ${clientRef.current.state}, skipping connect`);
+      // バックオフ状態の更新（APIからのレスポンスに基づく）
+      if (response.backoff && response.remainingSeconds) {
+        backoffStateRef.current.isActive = true;
+        backoffStateRef.current.endTime = now + (response.remainingSeconds * 1000);
+        console.log(`[YouTubeComments] API制限により${response.remainingSeconds}秒間バックオフ設定`);
+        
+        toast({
+          title: 'YouTube API制限',
+          description: `APIリクエスト制限のため、コメント取得を一時停止します (${Math.ceil(response.remainingSeconds / 60)}分間)`,
+          variant: 'destructive',
+        });
+        
         return;
       }
       
-      console.log('[SSE:Hook] Existing connection found, disconnecting first');
-      disconnect();
-    }
-    
-    // 新しい接続を作成
-    clientRef.current = new SSEClient({
-      ...optionsRef.current,
-      onMessage: handleMessage,
-      onSystemMessage: handleSystemMessage,
-      onConnect: () => {
-        updateConnectionState('connected');
-        setRetryCount(0);
-        optionsRef.current.onConnect?.();
-      },
-      onDisconnect: () => {
-        updateConnectionState('disconnected');
-        optionsRef.current.onDisconnect?.();
-      },
-      onError: (error) => {
-        // クライアントのエラー状態を確認
-        if (clientRef.current?.state === 'error') {
-          updateConnectionState('error');
-        } else if (clientRef.current?.currentRetryCount) {
-          setRetryCount(clientRef.current.currentRetryCount);
+      // APIからの推奨ポーリング間隔があれば使用
+      if (response.pollingIntervalMillis && response.pollingIntervalMillis > 0) {
+        backoffStateRef.current.pollingInterval = Math.max(5000, response.pollingIntervalMillis);
+        console.log(`[YouTubeComments] ポーリング間隔を ${backoffStateRef.current.pollingInterval / 1000} 秒に調整`);
+      }
+      
+      // バックオフ状態をリセット（成功したため）
+      if (backoffStateRef.current.isActive) {
+        backoffStateRef.current.isActive = false;
+        backoffStateRef.current.endTime = 0;
+        console.log('[YouTubeComments] バックオフ状態を解除');
+      }
+      
+      // コマンドを処理（あれば）
+      if (response.commands && Array.isArray(response.commands) && response.commands.length > 0) {
+        console.log(`[YouTubeComments] ${response.commands.length}件のコマンドを検出`);
+        setIsProcessingCommand(true);
+        
+        if (onCommandsDetected) {
+          await onCommandsDetected(response.commands);
         }
-        optionsRef.current.onError?.(error);
+        
+        setIsProcessingCommand(false);
+      }
+    } catch (error) {
+      console.error('[YouTubeComments] 取得エラー:', error);
+      
+      toast({
+        title: 'YouTubeコメント取得エラー',
+        description: error instanceof Error ? error.message : '不明なエラーが発生しました',
+        variant: 'destructive',
+      });
+    }
+  }, [onCommandsDetected]);
+  
+  /**
+   * 次回のポーリングをスケジュール
+   */
+  const scheduleNextFetch = useCallback(() => {
+    if (!isPollingRef.current) return;
+    
+    timeoutIdRef.current = setTimeout(() => {
+      fetchComments().finally(() => {
+        if (isPollingRef.current) {
+          scheduleNextFetch();
+        }
+      });
+    }, backoffStateRef.current.pollingInterval);
+  }, [fetchComments]);
+  
+  /**
+   * ポーリングを開始
+   */
+  const startPolling = useCallback(() => {
+    if (isPollingRef.current) return;
+    
+    console.log('[YouTubeComments] ポーリング開始');
+    isPollingRef.current = true;
+    setIsPolling(true);
+    
+    fetchComments().finally(() => {
+      if (isPollingRef.current) {
+        scheduleNextFetch();
       }
     });
-    
-    clientRef.current.connect();
-  }, [handleMessage, handleSystemMessage, updateConnectionState, disconnect]);
+  }, [fetchComments, scheduleNextFetch]);
   
-  // マウント時に接続、アンマウント時に切断
-  useEffect(() => {
-    console.log('[SSE:Hook] Connection effect triggered');
-    let isComponentMounted = true;
+  /**
+   * ポーリングを停止
+   */
+  const stopPolling = useCallback(() => {
+    console.log('[YouTubeComments] ポーリング停止');
+    isPollingRef.current = false;
+    setIsPolling(false);
     
-    // 接続を開始
-    if (isComponentMounted) {
-      console.log('[SSE:Hook] Component is mounted, connecting...');
-      connect();
+    if (timeoutIdRef.current) {
+      clearTimeout(timeoutIdRef.current);
+      timeoutIdRef.current = null;
+    }
+  }, []);
+  
+  // enabledフラグに基づいてポーリングを制御
+  useEffect(() => {
+    if (enabled) {
+      startPolling();
+    } else {
+      stopPolling();
     }
     
-    // クリーンアップ関数
     return () => {
-      console.log('[SSE:Hook] Component unmounting, disconnecting...');
-      isComponentMounted = false;
-      disconnect();
+      stopPolling();
     };
-  }, []); // 空の依存配列 - マウント時のみ実行
+  }, [enabled, startPolling, stopPolling]);
   
-  return {
-    data,
-    connectionState,
-    lastSystemMessage,
-    connect,
-    disconnect,
-    isReconnecting,
-    retryCount
+  return { 
+    isProcessingCommand,
+    startPolling, 
+    stopPolling,
+    isPolling
   };
 }
-
-export { type SSEConnectionState, type SystemMessage };
 </file>
 
 <file path="lib/autoExit.ts">
@@ -10435,6 +10065,155 @@ export function formatCurrentDateTime(): string {
 }
 </file>
 
+<file path="lib/client-utils.ts">
+import { AutoExitStatus } from './types';
+
+/**
+ * 自動退室のステータスを取得する（クライアント側で安全に使用できる）
+ * @param scheduledTime 自動退室時間
+ * @returns 自動退室状態の情報
+ */
+export function getAutoExitStatus(scheduledTime: Date | string | null): AutoExitStatus {
+  if (!scheduledTime) {
+    return {
+      isScheduled: false,
+      scheduledTime: null,
+      remainingTime: null,
+      formattedTime: null
+    };
+  }
+
+  const autoExitTime = typeof scheduledTime === 'string' 
+    ? new Date(scheduledTime) 
+    : scheduledTime;
+  
+  const now = new Date();
+  const remainingMs = autoExitTime.getTime() - now.getTime();
+
+  // 既に期限切れの場合
+  if (remainingMs <= 0) {
+    return {
+      isScheduled: true,
+      scheduledTime: autoExitTime,
+      remainingTime: 0,
+      formattedTime: '時間切れ'
+    };
+  }
+
+  return {
+    isScheduled: true,
+    scheduledTime: autoExitTime,
+    remainingTime: remainingMs,
+    formattedTime: formatRemainingTime(remainingMs)
+  };
+}
+
+/**
+ * 残り時間をフォーマットする
+ * @param milliseconds 残りミリ秒
+ * @returns フォーマットされた時間文字列 (例: "1時間23分")
+ */
+export function formatRemainingTime(milliseconds: number): string {
+  if (milliseconds <= 0) {
+    return '時間切れ';
+  }
+
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes > 0) {
+      return `${hours}時間${remainingMinutes}分`;
+    }
+    return `${hours}時間`;
+  } else if (minutes > 0) {
+    const remainingSeconds = seconds % 60;
+    if (remainingSeconds > 0 && minutes < 10) {
+      // 10分未満なら秒も表示
+      return `${minutes}分${remainingSeconds}秒`;
+    }
+    return `${minutes}分`;
+  } else {
+    return `${seconds}秒`;
+  }
+}
+
+/**
+ * 現在の日付と時刻をフォーマットする
+ * @returns フォーマットされた日時文字列 (例: "2023/04/06 15:30")
+ */
+export function formatCurrentDateTime(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  
+  return `${year}/${month}/${day} ${hours}:${minutes}`;
+}
+
+/**
+ * 経過時間を計算する
+ * @param startTime 開始時間
+ * @returns フォーマットされた経過時間 (例: "1時間23分")
+ */
+export function calculateElapsedTime(startTime: Date | string | null): string {
+  if (!startTime) return "0分";
+  
+  console.log(`[calculateElapsedTime] Input startTime:`, startTime);
+  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
+  const now = new Date();
+  const elapsedMs = now.getTime() - start.getTime();
+  
+  console.log(`[calculateElapsedTime] Now:`, now);
+  console.log(`[calculateElapsedTime] Start:`, start);
+  console.log(`[calculateElapsedTime] Elapsed ms:`, elapsedMs);
+  
+  if (elapsedMs <= 0) return "0分";
+  
+  const seconds = Math.floor(elapsedMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  console.log(`[calculateElapsedTime] Seconds:`, seconds);
+  console.log(`[calculateElapsedTime] Minutes:`, minutes);
+  console.log(`[calculateElapsedTime] Hours:`, hours);
+  
+  if (hours > 0) {
+    return `${hours}時間${minutes % 60}分`;
+  } else {
+    return `${minutes}分`;
+  }
+}
+
+/**
+ * 経過時間に応じたスタイルを取得する
+ * @param startTime 開始時間
+ * @returns CSSクラス名
+ */
+export function getElapsedTimeStyle(startTime: Date | string | null): string {
+  if (!startTime) return "text-blue-400";
+  
+  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
+  const now = new Date();
+  const elapsedMs = now.getTime() - start.getTime();
+  const minutes = Math.floor(elapsedMs / (1000 * 60));
+  
+  if (minutes >= 120) { // 2時間以上
+    return "text-red-500";
+  } else if (minutes >= 60) { // 1時間以上
+    return "text-orange-500";
+  } else if (minutes >= 30) { // 30分以上
+    return "text-amber-500";
+  } else {
+    return "text-blue-400";
+  }
+}
+</file>
+
 <file path="lib/types.ts">
 // クライアント・サーバー共通の型定義
 
@@ -10684,6 +10463,181 @@ export interface AutoExitProcessResult {
 - [ ] 未使用の変数、関数、インポート、コンポーネントを特定し削除
 - [ ] `console.log` 等のデバッグコードを削除または適切なロガーに置き換え
 - [ ] `.env.example` ファイルを作成・更新し、必要な環境変数を明記
+</file>
+
+<file path="app/api/check-auto-exit/route.ts">
+import { NextResponse } from 'next/server';
+import clientPromise from '@/lib/mongodb';
+import { Db, ObjectId } from 'mongodb';
+import { getLiveChatId, sendChatMessage } from '@/lib/youtube';
+import { messageTemplates } from '@/lib/messages';
+import { AutoExitProcessResult } from '@/lib/types';
+
+/**
+ * 自動退室が必要なユーザーをチェックして退室処理を行う
+ * @param db MongoDB データベース接続
+ * @param sendNotification YouTube通知メッセージを送信するかどうか
+ * @returns 処理された座席の数と詳細情報
+ */
+async function checkAndProcessAutoExit(
+  db: Db,
+  sendNotification: boolean = false
+): Promise<AutoExitProcessResult> {
+  const results: AutoExitProcessResult = {
+    processedCount: 0,
+    details: [] 
+  };
+
+  try {
+    const seatsCollection = db.collection('seats');
+    const currentTime = new Date();
+    
+    console.log(`[AutoExit] ${currentTime.toISOString()}に自動退室チェックを実行`);
+    
+    // 期限切れの座席を検索（入室中かつ自動退室時間が現在時刻より前）
+    const expiredSeats = await seatsCollection.find({
+      username: { $ne: null },
+      autoExitScheduled: { $lt: currentTime }
+    }).toArray();
+    
+    if (expiredSeats.length === 0) {
+      console.log('[AutoExit] 期限切れの座席はありませんでした');
+      return results;
+    }
+    
+    console.log(`[AutoExit] ${expiredSeats.length}件の期限切れ座席を処理します`);
+    
+    // YouTube通知のための準備
+    let liveChatId: string | null = null;
+    if (sendNotification) {
+      const videoId = process.env.YOUTUBE_VIDEO_ID;
+      if (videoId) {
+        try {
+          liveChatId = await getLiveChatId(videoId);
+        } catch (error) {
+          console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました:', error);
+        }
+      }
+    }
+    
+    // 各座席を処理
+    for (const seat of expiredSeats) {
+      const username = seat.username;
+      const roomId = seat.room_id;
+      const position = seat.position;
+      
+      try {
+        // 座席を空席に設定
+        await seatsCollection.updateOne(
+          { _id: seat._id },
+          { 
+            $set: { 
+              
+              timestamp: new Date()
+            } 
+          }
+        );
+        
+        console.log(`[AutoExit] ${username}を自動退室しました (部屋: ${roomId}, 座席: ${position})`);
+        
+        // 自動退室メッセージをYouTubeチャットに送信（設定されている場合）
+        if (sendNotification && liveChatId && username) {
+          await sendChatMessage(
+            liveChatId, 
+            messageTemplates.autoExited(username, roomId, position)
+          );
+        }
+        
+        results.processedCount++;
+        results.details.push({
+          username,
+          roomId,
+          position,
+          success: true
+        });
+      } catch (error) {
+        console.error(`[AutoExit] 座席(${roomId}-${position})の自動退室処理中にエラーが発生:`, error);
+        results.details.push({
+          username,
+          roomId,
+          position,
+          success: false,
+          error: error instanceof Error ? error.message : '不明なエラー'
+        });
+      }
+    }
+    
+    return results;
+  } catch (error) {
+    console.error('[AutoExit] 自動退室処理全体でエラーが発生しました:', error);
+    throw error;
+  }
+}
+
+/**
+ * POST /api/check-auto-exit
+ * 自動退室チェックを実行するAPIエンドポイント
+ */
+export async function POST(request: Request) {
+  console.log('[API] 自動退室チェックリクエストを受信');
+  
+  try {
+    // リクエストボディを解析
+    const { sendNotification = false } = await request.json();
+    
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // 自動退室チェックを実行
+    const result = await checkAndProcessAutoExit(db, sendNotification);
+    
+    return NextResponse.json({
+      success: true, 
+      processedCount: result.processedCount,
+      details: result.details
+    });
+    
+  } catch (error) {
+    console.error('[API] 自動退室チェック中にエラーが発生:', error);
+    
+    return NextResponse.json(
+      { error: '自動退室チェックに失敗しました', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/check-auto-exit
+ * システムからの定期実行用エンドポイント
+ */
+export async function GET() {
+  console.log('[API] 自動退室チェックのGETリクエストを受信 (システム実行)');
+  
+  try {
+    // MongoDBに接続
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    
+    // 自動退室チェックを実行（通知送信は有効）
+    const result = await checkAndProcessAutoExit(db, true);
+    
+    return NextResponse.json({
+      success: true, 
+      processedCount: result.processedCount,
+      details: result.details
+    });
+    
+  } catch (error) {
+    console.error('[API] 自動退室チェック中にエラーが発生:', error);
+    
+    return NextResponse.json(
+      { error: '自動退室チェックに失敗しました', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
 </file>
 
 <file path="components/FocusRoom.tsx">
@@ -11013,6 +10967,194 @@ const NotificationTicker: React.FC<NotificationTickerProps> = ({
 export default NotificationTicker;
 </file>
 
+<file path="hooks/use-sse.ts">
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { SSEClient, SSEClientOptions } from '@/lib/api/sse/sseClient';
+import { SSEConnectionState, SystemMessage } from '@/lib/api/sse/sseTypes';
+
+interface UseSSEResult<T> {
+  data: T | null;
+  connectionState: SSEConnectionState;
+  lastSystemMessage: SystemMessage | null;
+  connect: () => void;
+  disconnect: () => void;
+  isReconnecting: boolean;
+  retryCount: number;
+}
+
+/**
+ * Server-Sent Events (SSE) のカスタムフック
+ * 指数バックオフによる再接続ロジックとエラーハンドリングを実装
+ */
+export function useSSE<T = any>(options: SSEClientOptions): UseSSEResult<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [connectionState, setConnectionState] = useState<SSEConnectionState>('connecting');
+  const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  
+  const clientRef = useRef<SSEClient | null>(null);
+  // オプションへの安定参照
+  const optionsRef = useRef<SSEClientOptions>(options);
+  const isFirstRenderRef = useRef(true);
+  
+  // オプションの更新
+  useEffect(() => {
+    // 初回レンダリング時はスキップ（マウント時に接続するためのuseEffectに任せる）
+    if (isFirstRenderRef.current) {
+      console.log('[SSE:Hook] First render, skipping options update');
+      isFirstRenderRef.current = false;
+      return;
+    }
+    
+    // オプションの変更が本質的でない場合はスキップ
+    const isSignificantChange = (
+      options.endpoint !== optionsRef.current.endpoint ||
+      options.maxRetries !== optionsRef.current.maxRetries ||
+      options.initialBackoffDelay !== optionsRef.current.initialBackoffDelay ||
+      options.maxBackoffDelay !== optionsRef.current.maxBackoffDelay
+    );
+    
+    if (!isSignificantChange) {
+      console.log('[SSE:Hook] Options update is not significant, keeping current connection');
+      // 参照だけ更新
+      optionsRef.current = options;
+      return;
+    }
+    
+    console.log('[SSE:Hook] Significant options update detected, updating connection');
+    optionsRef.current = options;
+    
+    // オプションが変更された場合は再接続
+    if (clientRef.current && 
+        clientRef.current.state === 'connected' && 
+        isSignificantChange) {
+      console.log('[SSE:Hook] Options changed while connected, reconnecting');
+      if (clientRef.current) {
+        clientRef.current.disconnect();
+        clientRef.current = null;
+      }
+      
+      // 少し遅延させて再接続
+      setTimeout(() => {
+        if (!clientRef.current) {
+          connect();
+        }
+      }, 100);
+    }
+  }, [options]); // options変更時のみ実行
+  
+  // データメッセージハンドラ
+  const handleMessage = useCallback((newData: T) => {
+    setData(newData);
+    console.log('[SSE:Hook] Received data:', newData);
+    optionsRef.current.onMessage?.(newData);
+  }, []);
+  
+  // システムメッセージハンドラ
+  const handleSystemMessage = useCallback((message: SystemMessage) => {
+    setLastSystemMessage(message);
+    optionsRef.current.onSystemMessage?.(message);
+  }, []);
+  
+  // 接続状態の監視と更新
+  const updateConnectionState = useCallback((state: SSEConnectionState) => {
+    setConnectionState(state);
+    if (state === 'reconnecting') {
+      setIsReconnecting(true);
+    } else if (state === 'connected') {
+      setIsReconnecting(false);
+    }
+  }, []);
+  
+  // 切断メソッド - 先に定義して connect 内で使用できるようにする
+  const disconnect = useCallback(() => {
+    console.log('[SSE:Hook] Disconnecting from SSE endpoint');
+    if (clientRef.current) {
+      clientRef.current.disconnect();
+      clientRef.current = null; // 確実に参照をクリアする
+    }
+  }, []);
+  
+  // 接続メソッド
+  const connect = useCallback(() => {
+    console.log('[SSE:Hook] Connecting to SSE endpoint');
+    
+    // 既存の接続がある場合は状態を確認
+    if (clientRef.current) {
+      // 既に接続中または接続処理中の場合は何もしない
+      if (clientRef.current.state === 'connected' || 
+          clientRef.current.state === 'connecting' || 
+          clientRef.current.state === 'reconnecting') {
+        console.log(`[SSE:Hook] Already in state ${clientRef.current.state}, skipping connect`);
+        return;
+      }
+      
+      console.log('[SSE:Hook] Existing connection found, disconnecting first');
+      disconnect();
+    }
+    
+    // 新しい接続を作成
+    clientRef.current = new SSEClient({
+      ...optionsRef.current,
+      onMessage: handleMessage,
+      onSystemMessage: handleSystemMessage,
+      onConnect: () => {
+        updateConnectionState('connected');
+        setRetryCount(0);
+        optionsRef.current.onConnect?.();
+      },
+      onDisconnect: () => {
+        updateConnectionState('disconnected');
+        optionsRef.current.onDisconnect?.();
+      },
+      onError: (error) => {
+        // クライアントのエラー状態を確認
+        if (clientRef.current?.state === 'error') {
+          updateConnectionState('error');
+        } else if (clientRef.current?.currentRetryCount) {
+          setRetryCount(clientRef.current.currentRetryCount);
+        }
+        optionsRef.current.onError?.(error);
+      }
+    });
+    
+    clientRef.current.connect();
+  }, [handleMessage, handleSystemMessage, updateConnectionState, disconnect]);
+  
+  // マウント時に接続、アンマウント時に切断
+  useEffect(() => {
+    console.log('[SSE:Hook] Connection effect triggered');
+    let isComponentMounted = true;
+    
+    // 接続を開始
+    if (isComponentMounted) {
+      console.log('[SSE:Hook] Component is mounted, connecting...');
+      connect();
+    }
+    
+    // クリーンアップ関数
+    return () => {
+      console.log('[SSE:Hook] Component unmounting, disconnecting...');
+      isComponentMounted = false;
+      disconnect();
+    };
+  }, []); // 空の依存配列 - マウント時のみ実行
+  
+  return {
+    data,
+    connectionState,
+    lastSystemMessage,
+    connect,
+    disconnect,
+    isReconnecting,
+    retryCount
+  };
+}
+
+export { type SSEConnectionState, type SystemMessage };
+</file>
+
 <file path="lib/mongodb.ts">
 import { MongoClient } from 'mongodb';
 
@@ -11065,969 +11207,6 @@ export type Seat = {
   timestamp: Date;
   created_at: Date;
 };
-</file>
-
-<file path="next.config.js">
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  images: { 
-    unoptimized: true,
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: 'yt3.ggpht.com',
-        pathname: '**',
-      },
-    ],
-  },
-};
-
-module.exports = nextConfig;
-</file>
-
-<file path="app/api/youtube-comments/route.ts">
-import { NextResponse } from 'next/server';
-// CommonJS形式のライブラリをインポート
-import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
-import { detectCommand } from '@/lib/utils';
-import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
-
-// インメモリキャッシュ（サーバー再起動時にリセットされます）
-const liveChatIdCache: Record<string, string> = {};
-// 処理済みコメントIDを保存するSet
-const processedCommentIds = new Set<string>();
-// エラーバックオフのための状態管理
-const errorState = {
-  lastErrorTime: 0,
-  quotaExceeded: false,
-  backoffUntil: 0,
-  consecutiveErrors: 0
-};
-
-// コメントアイテムの型定義
-interface ChatItem {
-  id: string;
-  snippet?: {
-    displayMessage?: string;
-    publishedAt?: string;
-    authorDisplayName?: string;
-    authorPhotoUrl?: string;
-    authorChannelId?: {
-      value?: string;
-    };
-  };
-  authorDetails?: {
-    displayName?: string;
-    profileImageUrl?: string;
-    channelId?: string;  // チャンネルID（ユーザー識別用）
-  };
-}
-
-/**
- * YouTubeライブコメント取得API
- * コメント取得のみを担当し、コマンド実行（DB更新）は行わない
- */
-export async function GET() {
-  try {
-    // 現在時刻が backoffUntil を下回る場合はエラーを返す（APIリクエスト抑制）
-    const now = Date.now();
-    if (now < errorState.backoffUntil) {
-      const remainingSeconds = Math.ceil((errorState.backoffUntil - now) / 1000);
-      console.log(`[Comments API] APIリクエスト抑制中 (残り${remainingSeconds}秒)`);
-      return NextResponse.json({ 
-        error: `APIクォータ超過のため一時的に利用できません。(残り${remainingSeconds}秒)`,
-        commands: [],
-        backoff: true,
-        remainingSeconds
-      }, { status: 429 });
-    }
-
-    // 環境変数から動画IDを取得
-    console.log('[Comments API] コメント取得開始');
-    const videoId = process.env.YOUTUBE_VIDEO_ID;
-    // BOTのチャンネルID（環境変数から取得または直接指定）
-    const botChannelId = process.env.YOUTUBE_BOT_CHANNEL_ID || '';
-    const adminChannelId = process.env.ADMIN_YOUTUBE_CHANNEL_ID; // 運営者IDを取得
-    
-    if (!videoId) {
-      return NextResponse.json({ error: 'YOUTUBE_VIDEO_IDが設定されていません' }, { status: 400 });
-    }
-    
-    // キャッシュからliveChatIdを取得
-    let liveChatId = liveChatIdCache[videoId];
-    let usedCache = false;
-    
-    // キャッシュにない場合のみAPIを呼び出し
-    if (!liveChatId) {
-      try {
-        console.log(`[Comments API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
-        const fetchedLiveChatId = await getLiveChatId(videoId);
-        
-        if (fetchedLiveChatId) {
-          // キャッシュに保存
-          liveChatId = fetchedLiveChatId;
-          console.log(`[Comments API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
-          liveChatIdCache[videoId] = liveChatId;
-          
-          // エラー状態をリセット
-          errorState.consecutiveErrors = 0;
-          errorState.quotaExceeded = false;
-        } else {
-          return NextResponse.json({ error: 'ライブチャットIDが取得できませんでした' }, { status: 404 });
-        }
-      } catch (error: any) {
-        // API呼び出しに失敗した場合のエラーハンドリング
-        console.error('[Comments API] ライブチャットID取得エラー:', error);
-        
-        // クォータ超過エラーの場合、長めのバックオフを設定
-        if (error?.message?.includes('quota') || error?.response?.status === 403 || 
-            error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
-          
-          errorState.quotaExceeded = true;
-          errorState.lastErrorTime = now;
-          
-          // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
-          const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
-          errorState.backoffUntil = now + backoffTime;
-          errorState.consecutiveErrors++;
-          
-          console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-          
-          return NextResponse.json({ 
-            error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
-            commands: [],
-            backoff: true
-          }, { status: 429 });
-        }
-        
-        // その他のエラーの場合
-        errorState.consecutiveErrors++;
-        
-        if (errorState.consecutiveErrors > 3) {
-          // 連続エラー回数が多い場合は一時的にバックオフ
-          const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
-          errorState.backoffUntil = now + backoffTime;
-          
-          console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-          
-          return NextResponse.json({ 
-            error: `YouTube APIに接続できません。${backoffTime / 60000}分後に再試行してください。`,
-            commands: [],
-            backoff: true
-          }, { status: 503 });
-        }
-        
-        return NextResponse.json({ error: 'ライブチャットIDの取得に失敗しました' }, { status: 500 });
-      }
-    } else {
-      console.log(`[Comments API] キャッシュからliveChatIdを取得しました (videoId: ${videoId}, liveChatId: ${liveChatId})`);
-      usedCache = true;
-    }
-    
-    // ページトークンをクエリから取得（初回は null）
-    const pageToken = null; // 注: 実装を簡単にするため固定
-    
-    // コメントデータを取得
-    let chatData;
-    try {
-      chatData = await getLiveChatMessages(liveChatId, pageToken);
-      
-      // 成功したらエラーカウントをリセット
-      errorState.consecutiveErrors = 0;
-    } catch (error: any) {
-      console.error('[Comments API] コメント取得エラー:', error);
-      
-      // クォータ超過エラーの場合
-      if (error?.message?.includes('quota') || error?.response?.status === 403 || 
-          error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
-        
-        errorState.quotaExceeded = true;
-        errorState.lastErrorTime = now;
-        
-        // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
-        const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
-        errorState.backoffUntil = now + backoffTime;
-        errorState.consecutiveErrors++;
-        
-        console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-        
-        return NextResponse.json({ 
-          error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
-          commands: [],
-          backoff: true
-        }, { status: 429 });
-      }
-      
-      // その他のエラーの場合
-      errorState.consecutiveErrors++;
-      
-      // 連続エラーが続く場合はバックオフを設定
-      if (errorState.consecutiveErrors > 3) {
-        const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
-        errorState.backoffUntil = now + backoffTime;
-        
-        return NextResponse.json({ 
-          error: `コメントの取得に失敗しました。${backoffTime / 60000}分後に再試行してください。`,
-          commands: [],
-          backoff: true
-        }, { status: 503 });
-      }
-      
-      return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
-    }
-    
-    // 検出済みコマンドの配列を準備
-    const detectedCommands = [];
-    const client = await clientPromise; // MongoDBクライアントを取得
-    const db = client.db('coworking'); // データベースを選択
-    const announcementsCollection = db.collection('announcements'); // コレクションを選択
-
-    // コメントごとにコマンド検出を行う
-    for (const item of chatData.items || []) {
-      const commentId = item.id;
-      const commentText = item.snippet?.displayMessage || '';
-      const publishedAt = item.snippet?.publishedAt; // YouTube上の公開日時
-      
-      // API構造に応じて投稿者情報を取得（snippetとauthorDetailsの両方をチェック）
-      const authorName = item.snippet?.authorDisplayName || item.authorDetails?.displayName;
-      const authorId = (item.snippet?.authorChannelId?.value) || item.authorDetails?.channelId;
-      const profileImageUrl = item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl;
-      
-      // 以下の条件でコメント処理をスキップ
-      // 1. 投稿者情報がない
-      // 2. 既に処理済みのコメント
-      // 3. BOT自身の投稿
-      if (!authorName || !authorId) continue; // 投稿者情報がない場合はスキップ
-      if (processedCommentIds.has(commentId)) {
-        console.log(`[Comments API] スキップ: 既に処理済みのコメント (ID: ${commentId})`);
-        continue;
-      }
-      if (botChannelId && authorId === botChannelId) {
-        console.log(`[Comments API] スキップ: BOT自身の投稿 (ID: ${commentId})`);
-        // BOT自身の投稿はセットに追加して今後処理しないようにする
-        processedCommentIds.add(commentId);
-        continue;
-      }
-      
-      console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
-      // console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`); // 必要ならログ出力
-      
-      // ★★★ 運営者コメントか判定 ★★★
-      if (adminChannelId && authorId === adminChannelId) {
-        console.log(`[Comments API] お知らせコメント検出: ${authorName} - ${commentText}`);
-        try {
-          // お知らせをDBに保存
-          await announcementsCollection.insertOne({
-            message: commentText,
-            authorChannelId: authorId,
-            authorName: authorName, // 念のため名前も保存
-            profileImageUrl: profileImageUrl, // プロフィール画像も保存
-            publishedAt: publishedAt ? new Date(publishedAt) : new Date(), // 日付形式に変換
-            createdAt: new Date(), // サーバーでの保存日時
-          });
-          console.log(`[Comments API] お知らせをDBに保存しました: ${commentText}`);
-          processedCommentIds.add(commentId); // 処理済みとしてマーク
-        } catch (dbError) {
-          console.error('[Comments API] お知らせのDB保存エラー:', dbError);
-          // エラーが発生しても処理を続行する（他のコメントに影響を与えない）
-        }
-        // 運営者コメントはお知らせ専用なので、コマンド検出は行わない
-        continue; // 次のコメントへ
-      }
-
-      // --- 運営者コメントでない場合の処理 ---
-      // コマンド検出
-      const { command, taskName } = detectCommand(commentText);
-      
-      if (command) {
-        // コマンドを検出した場合、コマンド情報を配列に追加
-        detectedCommands.push({
-          command,
-          taskName,
-          authorName,
-          authorId,
-          commentId,
-          commentText,
-          profileImageUrl
-        });
-        
-        console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
-        
-        // 処理済みとしてマーク
-        processedCommentIds.add(commentId);
-      }
-      // コマンドがない通常のコメントはここでは何もせず、processedCommentIdsにも追加しない
-      // （必要なら後で処理済みにするなどのロジックを追加可能）
-    }
-    
-    // 処理済みID数が多くなりすぎないように、最新の1000件だけを保持
-    if (processedCommentIds.size > 1000) {
-      const idsToKeep = Array.from(processedCommentIds).slice(-1000);
-      processedCommentIds.clear();
-      idsToKeep.forEach(id => processedCommentIds.add(id));
-      console.log(`[Comments API] 処理済みIDキャッシュをクリーンアップしました (残り: ${processedCommentIds.size}件)`);
-    }
-    
-    // コメントデータを整形 (UI表示用)
-    const comments = chatData.items?.map((item: ChatItem) => ({
-      id: item.id,
-      author: item.snippet?.authorDisplayName || item.authorDetails?.displayName || '不明なユーザー',
-      profileImageUrl: item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl,
-      text: item.snippet?.displayMessage || '',
-      publishedAt: item.snippet?.publishedAt
-    })) || [];
-    
-    return NextResponse.json({
-      comments,
-      commands: detectedCommands,
-      nextPageToken: chatData.nextPageToken,
-      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000,
-      usedCache // キャッシュを使用したかどうかを返す
-    });
-    
-  } catch (error) {
-    console.error('[Comments API] YouTube API エラー:', error);
-    
-    // エラーカウントを増やす
-    errorState.consecutiveErrors++;
-    
-    // 連続エラーが多い場合はバックオフを設定
-    if (errorState.consecutiveErrors > 3) {
-      const now = Date.now();
-      const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
-      errorState.backoffUntil = now + backoffTime;
-      
-      console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-      
-      return NextResponse.json({ 
-        error: `サービスが一時的に利用できません。${backoffTime / 60000}分後に再試行してください。`,
-        commands: [],
-        backoff: true
-      }, { status: 503 });
-    }
-    
-    return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
-  }
-}
-</file>
-
-<file path="components/UserCard.tsx">
-import Image from "next/image";
-import { calculateElapsedTime, getElapsedTimeStyle } from "@/lib/client-utils";
-import { useState, useEffect } from "react";
-import AutoExitStatus from "./AutoExitStatus";
-import { User } from "lucide-react";
-
-interface UserCardProps {
-  user: {
-    id: string;
-    name: string;
-    avatar?: string;
-    task?: string | null;
-    autoExitScheduled?: Date | string | null;
-    enterTime?: Date | string | null;
-    profileImageUrl?: string | null;
-  };
-  roomId?: string;
-  position?: number;
-}
-
-export default function UserCard({ user, roomId, position }: UserCardProps) {
-  // デバッグ用ログ出力
-  console.log(`[UserCard] Rendering user: ${user.name}, profileImageUrl:`, user.profileImageUrl);
-  
-  // Hydration Errorを防ぐためにクライアントサイドでのみ計算する
-  const [mounted, setMounted] = useState(false);
-  const [displayTime, setDisplayTime] = useState<string>("0分");
-  const [timeStyle, setTimeStyle] = useState<string>("text-blue-400");
-  const [imageError, setImageError] = useState(false);
-  
-  useEffect(() => {
-    setMounted(true);
-    setImageError(false);
-    
-    // デバッグ: コンポーネントマウント時のプロパティを出力
-    console.log(`[UserCard] useEffect - User ${user.name}:`, {
-      profileImageUrl: user.profileImageUrl,
-      validUrl: user.profileImageUrl && typeof user.profileImageUrl === 'string' && user.profileImageUrl.startsWith('http')
-    });
-    
-    // 経過時間を更新する関数
-    const updateElapsedTime = () => {
-      if (user.enterTime) {
-        const elapsedTime = calculateElapsedTime(user.enterTime);
-        const style = getElapsedTimeStyle(user.enterTime);
-        setDisplayTime(elapsedTime || "0分");
-        setTimeStyle(style || "text-blue-400");
-      }
-    };
-    
-    // 初回計算
-    updateElapsedTime();
-    
-    // 1分ごとに経過時間を更新するタイマーを設定
-    const intervalId = setInterval(updateElapsedTime, 60000); // 60秒 = 1分
-    
-    // コンポーネントのアンマウント時にタイマーをクリア
-    return () => clearInterval(intervalId);
-  }, [user.enterTime, user.profileImageUrl, user.name]); // profileImageUrlが変更されたときもリセット
-  
-  // プロフィール画像URLが有効かチェック (必ずhttpで始まるURLであることを確認)
-  const validProfileUrl = user.profileImageUrl && 
-    typeof user.profileImageUrl === 'string' && 
-    user.profileImageUrl.startsWith('http');
-  
-  // 有効なプロフィール画像URLかつエラーが発生していない場合
-  const hasValidProfileImage = validProfileUrl && !imageError;
-  
-  const handleImageError = () => {
-    console.log('[UserCard] プロフィール画像の読み込みに失敗:', user.profileImageUrl);
-    setImageError(true);
-  };
-  
-  return (
-    <div className="bg-white/80 backdrop-blur-sm rounded-lg p-3 flex flex-col shadow-sm border border-white/30">
-      <div className="flex items-center gap-2 mb-1">
-        {hasValidProfileImage ? (
-          <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-gray-100">
-            <Image 
-              src={user.profileImageUrl as string} 
-              alt={user.name} 
-              width={32} 
-              height={32}
-              className="w-full h-full object-cover"
-              onError={handleImageError}
-              unoptimized // 画像最適化を無効化
-            />
-          </div>
-        ) : (
-          <div className="w-8 h-8 rounded-full bg-gray-200/80 flex items-center justify-center flex-shrink-0">
-            <User className="h-5 w-5 text-gray-500" />
-          </div>
-        )}
-        <div className="flex flex-col flex-grow min-w-0">
-          <h4 className="font-medium text-gray-800 truncate">{user.name}</h4>
-          <span className={`text-xs font-semibold ${mounted ? timeStyle : "text-blue-400"}`}>
-            経過: {displayTime}
-          </span>
-        </div>
-      </div>
-      
-      <div className="flex justify-between items-center mt-1 pl-10">
-        <p className="text-xs text-gray-600 truncate">{user.task || '作業中'}</p>
-        
-        {/* 自動退室時間が設定されている場合、コンパクトモードで表示 */}
-        {user.autoExitScheduled && (
-          <AutoExitStatus 
-            scheduledTime={typeof user.autoExitScheduled === 'string' 
-              ? user.autoExitScheduled 
-              : user.autoExitScheduled instanceof Date 
-                ? user.autoExitScheduled.toISOString() 
-                : null}
-            seatId={user.id}
-            roomId={roomId}
-            position={position}
-            isCompact={true}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="lib/youtube.ts">
-import { google, youtube_v3 } from 'googleapis';
-import { Db } from 'mongodb';
-import { messageTemplates } from './messages';
-import { scheduleAutoExit } from './autoExit';
-
-if (!process.env.YOUTUBE_API_KEY) {
-  throw new Error('Missing YOUTUBE_API_KEY environment variable');
-}
-
-// YouTube API の型定義
-export interface Author {
-  displayName: string;
-  profileImageUrl: string;
-  channelId: string;
-}
-
-export interface MessageSnippet {
-  displayMessage: string;
-  publishedAt: string;
-  authorDisplayName?: string;
-  authorPhotoUrl?: string;
-  authorChannelId?: {
-    value?: string;
-  };
-}
-
-export interface ChatItem {
-  id: string;
-  snippet: MessageSnippet;
-  authorDetails: Author;
-}
-
-export interface ChatResponse {
-  items: ChatItem[];
-  nextPageToken: string;
-  pollingIntervalMillis: number;
-}
-
-// API リクエストエラーの型
-export class YouTubeAPIError extends Error {
-  status?: number;
-  code?: string;
-  
-  constructor(message: string, status?: number, code?: string) {
-    super(message);
-    this.name = 'YouTubeAPIError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-// API Keyを使ったYouTube APIの初期化
-const youtubeWithApiKey = google.youtube({
-  version: 'v3',
-  auth: process.env.YOUTUBE_API_KEY
-});
-
-// OAuth2クライアントの設定（OAuth認証が設定されている場合のみ使用）
-let oauth2Client: any;
-let youtubeWithOAuth: youtube_v3.Youtube | null = null;
-
-if (process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET && process.env.YOUTUBE_REDIRECT_URL) {
-  oauth2Client = new google.auth.OAuth2(
-    process.env.YOUTUBE_CLIENT_ID,
-    process.env.YOUTUBE_CLIENT_SECRET,
-    process.env.YOUTUBE_REDIRECT_URL
-  );
-
-  // リフレッシュトークンの設定（存在する場合）
-  if (process.env.YOUTUBE_REFRESH_TOKEN) {
-    oauth2Client.setCredentials({
-      refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
-    });
-  }
-
-  // OAuth2認証を使用したYouTube APIの初期化
-  youtubeWithOAuth = google.youtube({
-    version: 'v3',
-    auth: oauth2Client
-  });
-}
-
-/**
- * ライブチャットIDを取得する（API Keyのみで実行可能）
- * @param videoId 動画ID
- * @returns ライブチャットID
- */
-export async function getLiveChatId(videoId: string): Promise<string> {
-  try {
-    const response = await youtubeWithApiKey.videos.list({
-      part: ['liveStreamingDetails'],
-      id: [videoId]
-    });
-
-    const video = response.data.items && response.data.items[0];
-    if (!video || !video.liveStreamingDetails || !video.liveStreamingDetails.activeLiveChatId) {
-      throw new Error('ライブチャットIDが見つかりませんでした');
-    }
-
-    return video.liveStreamingDetails.activeLiveChatId;
-  } catch (error) {
-    console.error('ライブチャットID取得エラー:', error);
-    throw new Error('ライブチャットIDの取得に失敗しました');
-  }
-}
-
-/**
- * YouTubeのライブチャットにメッセージを送信する（OAuth2認証が必要）
- * @param liveChatId ライブチャットID
- * @param message 送信するメッセージ
- * @returns 送信結果
- */
-export async function sendChatMessage(liveChatId: string, message: string) {
-  try {
-    // OAuth2認証が設定されていない場合はログのみ出力
-    if (!youtubeWithOAuth) {
-      console.log('OAuth2認証が設定されていないため、メッセージ送信をスキップします:', message);
-      return { success: false, message: 'OAuth2認証が設定されていません' };
-    }
-
-    const response = await youtubeWithOAuth.liveChatMessages.insert({
-      part: ['snippet'],
-      requestBody: {
-        snippet: {
-          liveChatId: liveChatId,
-          type: 'textMessageEvent',
-          textMessageDetails: {
-            messageText: message
-          }
-        }
-      }
-    });
-
-    console.log('メッセージ送信成功:', message);
-    return response.data;
-  } catch (error) {
-    console.error('メッセージ送信エラー:', error);
-    throw new Error('メッセージの送信に失敗しました');
-  }
-}
-
-/**
- * ライブチャットのメッセージを取得する（API Keyのみで実行可能）
- * @param liveChatId ライブチャットID
- * @param pageToken ページトークン（続きを取得する場合）
- * @returns チャットメッセージのレスポンス
- */
-export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
-  try {
-    // API呼び出しでsnippetとauthorDetailsの両方を取得
-    const response = await youtubeWithApiKey.liveChatMessages.list({
-      part: ['snippet', 'authorDetails'],
-      liveChatId,
-      pageToken: pageToken || undefined,
-      maxResults: 100
-    });
-    
-    console.log(`[YouTube API] コメント取得: ${response.data.items?.length || 0}件`);
-    
-    // デバッグのため最初のコメントの構造を出力
-    if (response.data.items && response.data.items.length > 0) {
-      const firstItem = response.data.items[0];
-      console.log('[YouTube API] コメント構造サンプル:', 
-        JSON.stringify({
-          id: firstItem.id,
-          snippet: firstItem.snippet,
-          authorDetails: firstItem.authorDetails
-        }, null, 2).substring(0, 500) + '...');
-    }
-    
-    return response.data as ChatResponse;
-  } catch (error: any) {
-    console.error('Error getting live chat messages:', error?.response?.data || error);
-    throw new YouTubeAPIError(
-      `Failed to get live chat messages: ${error?.message || 'Unknown error'}`,
-      error?.response?.status,
-      error?.code
-    );
-  }
-}
-
-/**
- * キャッシュされたライブチャットIDを保持するオブジェクト
- * メモリ内キャッシュとして機能（サーバー再起動でリセット）
- */
-export const liveChatIdCache: Record<string, string> = {};
-
-// プロフィール画像URLを検証する関数
-function isValidImageUrl(url?: string | null): boolean {
-  return Boolean(url && typeof url === 'string' && url.startsWith('http'));
-}
-
-/**
- * YouTubeコメントを処理してコマンドとして実行する
- * @param commentText コメントテキスト
- * @param username ユーザー名
- * @param authorId 著者ID (YouTubeチャンネルID)
- * @param db MongoDBインスタンス
- * @param videoId ビデオID
- * @param profileImageUrl プロフィール画像URL
- * @returns 処理結果
- */
-export async function processYouTubeComment(
-  commentText: string,
-  username: string,
-  authorId: string,
-  db: Db,
-  videoId?: string,
-  profileImageUrl?: string
-) {
-  console.log(`[YouTube] Processing comment from ${username}: ${commentText}`);
-  // コマンドとタスク名を抽出
-  const trimmedComment = commentText.trim();
-  let command = '';
-  let taskName = '';
-
-  if (trimmedComment.startsWith('/work ')) {
-    command = 'work';
-    taskName = trimmedComment.substring(6).trim();
-  } else if (trimmedComment === '/finish') {
-    command = 'finish';
-  } else {
-    // コマンドでない場合は処理しない
-    return { success: false, message: 'コメントはコマンドではありません' };
-  }
-
-  // コマンド処理を実行
-  try {
-    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName, profileImageUrl);
-    return { success: true, result };
-  } catch (error) {
-    console.error(`[YouTube] Error processing comment as command:`, error);
-    return { success: false, error: (error as Error).message };
-  }
-}
-
-/**
- * コマンドを処理する共通関数
- * YouTube APIとWeb UIの両方から使用される
- * 
- * @param command コマンド文字列（work, finishなど）
- * @param username ユーザー名
- * @param db MongoDBインスタンス
- * @param videoId オプションのYouTubeビデオID
- * @param liveChatId オプションのライブチャットID
- * @param authorId オプションのユーザーID（YouTubeチャンネルIDなど）
- * @param taskName オプションのタスク名（workコマンド用）
- * @param profileImageUrl オプションのプロフィール画像URL
- * @returns 処理結果のオブジェクト
- */
-export async function processCommand(
-  command: string,
-  username: string,
-  db: Db,
-  videoId?: string,
-  liveChatId?: string,
-  authorId?: string,
-  taskName?: string,
-  profileImageUrl?: string
-) {
-  console.log(`[Command] Processing command: ${command} from ${username}`);
-  
-  // より詳細なデバッグ情報を出力
-  console.log(`[Command] DEBUG - Command details:`, {
-    command,
-    username,
-    authorId: authorId || 'not provided',
-    taskName: taskName || 'not provided',
-    profileImageUrl: profileImageUrl || 'not provided',
-    hasValidProfileImage: isValidImageUrl(profileImageUrl)
-  });
-  
-  // プロフィール画像URLをログに記録、検証
-  if (profileImageUrl) {
-    if (isValidImageUrl(profileImageUrl)) {
-      console.log(`[Command] Valid profile image URL received: ${profileImageUrl}`);
-    } else {
-      console.warn(`[Command] Invalid profile image URL received: ${profileImageUrl}`);
-      profileImageUrl = undefined; // 無効なURLはundefinedに設定
-    }
-  }
-  
-  const seatsCollection = db.collection('seats');
-  const notificationsCollection = db.collection('notifications');
-  
-  // ライブチャットIDが指定されていない場合で、videoIdが指定されている場合、取得を試みる
-  if (!liveChatId && videoId) {
-    try {
-      liveChatId = await getLiveChatId(videoId);
-    } catch (error) {
-      console.warn('[Command] Failed to get liveChatId, notifications will be disabled:', error);
-      // 通知は送れなくても処理は続行
-    }
-  }
-  
-  // OAuth認証が設定されているかをチェック
-  const isOAuthConfigured = !!youtubeWithOAuth;
-  
-  // システムメッセージをMongoDBに保存する関数（SSEで検知される）
-  const saveSystemMessage = async (message: string, type: 'info' | 'warning' | 'error' = 'info') => {
-    try {
-      await notificationsCollection.insertOne({
-        message,
-        type,
-        timestamp: new Date(),
-        id: `${Date.now()}-${Math.random()}`, // ユニークID
-        isRead: false
-      });
-      console.log(`[Command] System message saved: ${message}`);
-    } catch (err) {
-      console.error('[Command] Failed to save system message:', err);
-    }
-  };
-  
-  // コマンドタイプに応じた処理
-  if (command === 'work') {
-    if (!taskName) {
-      throw new Error('タスク名が指定されていません');
-    }
-    
-    console.log(`[Command] /work command execution: ${username} - Task: ${taskName}`);
-    
-    // ユーザーIDが指定されている場合、それを使用してユーザーを識別
-    // 指定されていない場合は、ユーザー名で識別
-    const userQuery = authorId ? { authorId } : { username };
-    
-    // 同じユーザーの既存のアクティブセッションをすべて非アクティブにする
-    if (authorId) {
-      const deactivateResult = await seatsCollection.updateMany(
-        { ...userQuery, is_active: true },
-        { 
-          $set: { 
-            is_active: false,
-            exitTime: new Date(),
-            timestamp: new Date()
-          } 
-        }
-      );
-      
-      console.log(`[Command] Deactivated ${deactivateResult.modifiedCount} existing sessions for ${username}`);
-    }
-    
-    const enterTime = new Date();
-    
-    // 新しい座席を作成する
-    // 最大の座席番号を取得して次の番号を割り当て
-    const lastSeat = await seatsCollection.find().sort({ position: -1 }).limit(1).toArray();
-    const newPosition = lastSeat.length > 0 ? lastSeat[0].position + 1 : 1;
-    
-    // 新しい座席を作成
-    const newSeat: Record<string, any> = {
-      position: newPosition,
-      username: username,
-      authorId: authorId,
-      task: taskName,
-      enterTime: enterTime,
-      is_active: true,
-      exitTime: null,
-      timestamp: new Date(),
-      created_at: new Date()
-    };
-    
-    // 有効なプロフィール画像URLが提供された場合のみ設定
-    if (isValidImageUrl(profileImageUrl)) {
-      newSeat.profileImageUrl = profileImageUrl;
-      console.log(`[Command] Adding profile image URL to new created seat: ${profileImageUrl}`);
-    } else {
-      console.log(`[Command] No valid profile image URL to add to newly created seat`);
-    }
-    
-    console.log(`[Command] Creating new seat:`, newSeat);
-    
-    const insertResult = await seatsCollection.insertOne(newSeat);
-    
-    console.log(`[Command] New seat created:`, {
-      insertedId: insertResult.insertedId.toString(),
-      acknowledged: insertResult.acknowledged
-    });
-    
-    // 作成した座席のデータを取得して確認
-    const createdSeat = await seatsCollection.findOne({ _id: insertResult.insertedId });
-    console.log(`[Command] Newly created seat data:`, {
-      id: createdSeat?._id.toString(),
-      username: createdSeat?.username,
-      profileImageUrl: createdSeat?.profileImageUrl,
-      hasProfileImage: !!createdSeat?.profileImageUrl
-    });
-    
-    // 自動退室時間を設定
-    await scheduleAutoExit(db, newPosition, 2);
-    
-    console.log(`[Command] Created new seat: Room focus-room, Position ${newPosition} for ${username} (Task: ${taskName})`);
-    
-    // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
-    if (liveChatId && isOAuthConfigured) {
-      try {
-        await sendChatMessage(
-          liveChatId, 
-          messageTemplates.seatTaken(username, 'focus-room', newPosition, taskName)
-        );
-      } catch (error) {
-        console.warn('[Command] Failed to send message, continuing without notification:', error);
-        // メッセージ送信に失敗しても処理は続行
-      }
-    }
-    
-    // システムメッセージを保存（SSEで検知される）
-    await saveSystemMessage(`${username}さんが「${taskName}」で入室しました`, 'info');
-    
-    return {
-      success: true,
-      action: 'create',
-      seat: {
-        roomId: 'focus-room',
-        position: newPosition,
-        username: username,
-        task: taskName,
-        id: insertResult.insertedId.toString()
-      }
-    };
-  } else if (command === 'finish') {
-    console.log(`[Command] /finish command execution: ${username}`);
-    
-    // ユーザーIDかユーザー名でアクティブな座席を検索
-    const userQuery = authorId 
-      ? { authorId, is_active: true } 
-      : { username, is_active: true };
-    
-    try {
-      // ユーザーの座席を検索し、非アクティブに設定
-      const result = await seatsCollection.findOneAndUpdate(
-        userQuery,
-        { 
-          $set: { 
-            is_active: false,
-            exitTime: new Date(),
-            timestamp: new Date()
-          } 
-        },
-        { returnDocument: 'before' } // 更新前の情報を取得
-      );
-      
-      if (result.value && result.value.username) {
-        console.log(`[Command] ${username} has left the seat`);
-        
-        // 退室メッセージを送信（OAuth認証が設定されている場合のみ）
-        if (liveChatId && isOAuthConfigured) {
-          try {
-            await sendChatMessage(
-              liveChatId, 
-              messageTemplates.seatVacated(username, 'focus-room', result.value.position)
-            );
-          } catch (error) {
-            console.warn('[Command] Failed to send message, continuing without notification:', error);
-            // メッセージ送信に失敗しても処理は続行
-          }
-        }
-        
-        // システムメッセージを保存（SSEで検知される）
-        await saveSystemMessage(`${username}さんが退室しました`, 'info');
-        
-        return {
-          success: true,
-          action: 'exit',
-          seat: {
-            roomId: 'focus-room',
-            position: result.value.position,
-            previousUsername: username
-          }
-        };
-      } else {
-        console.log(`[Command] ${username} was not seated`);
-        // 入室していない場合は特に何もしない
-        return {
-          success: true,
-          action: 'none',
-          message: 'ユーザーは入室していませんでした'
-        };
-      }
-    } catch (error) {
-      console.error(`[Command] Error while processing exit for ${username}:`, error);
-      throw new Error('退室処理に失敗しました: ' + (error as Error).message);
-    }
-  } else {
-    console.log(`[Command] Unsupported command: ${command}`);
-    throw new Error('対応していないコマンドです');
-  }
-}
 </file>
 
 <file path="app/api/sse/route.ts">
@@ -12789,6 +11968,133 @@ export default function Header() {
 }
 </file>
 
+<file path="components/UserCard.tsx">
+import Image from "next/image";
+import { calculateElapsedTime, getElapsedTimeStyle } from "@/lib/client-utils";
+import { useState, useEffect } from "react";
+import AutoExitStatus from "./AutoExitStatus";
+import { User } from "lucide-react";
+
+interface UserCardProps {
+  user: {
+    id: string;
+    name: string;
+    avatar?: string;
+    task?: string | null;
+    autoExitScheduled?: Date | string | null;
+    enterTime?: Date | string | null;
+    profileImageUrl?: string | null;
+  };
+  roomId?: string;
+  position?: number;
+}
+
+export default function UserCard({ user, roomId, position }: UserCardProps) {
+  // デバッグ用ログ出力
+  console.log(`[UserCard] Rendering user: ${user.name}, profileImageUrl:`, user.profileImageUrl);
+  
+  // Hydration Errorを防ぐためにクライアントサイドでのみ計算する
+  const [mounted, setMounted] = useState(false);
+  const [displayTime, setDisplayTime] = useState<string>("0分");
+  const [timeStyle, setTimeStyle] = useState<string>("text-blue-400");
+  const [imageError, setImageError] = useState(false);
+  
+  useEffect(() => {
+    setMounted(true);
+    setImageError(false);
+    
+    // デバッグ: コンポーネントマウント時のプロパティを出力
+    console.log(`[UserCard] useEffect - User ${user.name}:`, {
+      profileImageUrl: user.profileImageUrl,
+      validUrl: user.profileImageUrl && typeof user.profileImageUrl === 'string' && user.profileImageUrl.startsWith('http')
+    });
+    
+    // 経過時間を更新する関数
+    const updateElapsedTime = () => {
+      if (user.enterTime) {
+        console.log(`[UserCard] Updating elapsed time for ${user.name}. enterTime:`, user.enterTime);
+        const elapsedTime = calculateElapsedTime(user.enterTime);
+        const style = getElapsedTimeStyle(user.enterTime);
+        console.log(`[UserCard] Calculated elapsed time: ${elapsedTime}`);
+        setDisplayTime(elapsedTime || "0分");
+        setTimeStyle(style || "text-blue-400");
+      }
+    };
+    
+    // 初回計算
+    updateElapsedTime();
+    
+    // 1分ごとに経過時間を更新するタイマーを設定
+    const intervalId = setInterval(updateElapsedTime, 10000); // 10秒ごとに更新
+    
+    // コンポーネントのアンマウント時にタイマーをクリア
+    return () => clearInterval(intervalId);
+  }, [user.enterTime, user.profileImageUrl, user.name]); // profileImageUrlが変更されたときもリセット
+  
+  // プロフィール画像URLが有効かチェック (必ずhttpで始まるURLであることを確認)
+  const validProfileUrl = user.profileImageUrl && 
+    typeof user.profileImageUrl === 'string' && 
+    user.profileImageUrl.startsWith('http');
+  
+  // 有効なプロフィール画像URLかつエラーが発生していない場合
+  const hasValidProfileImage = validProfileUrl && !imageError;
+  
+  const handleImageError = () => {
+    console.log('[UserCard] プロフィール画像の読み込みに失敗:', user.profileImageUrl);
+    setImageError(true);
+  };
+  
+  return (
+    <div className="bg-white/80 backdrop-blur-sm rounded-lg p-3 flex flex-col shadow-sm border border-white/30">
+      <div className="flex items-center gap-2 mb-1">
+        {hasValidProfileImage ? (
+          <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-gray-100">
+            <Image 
+              src={user.profileImageUrl as string} 
+              alt={user.name} 
+              width={32} 
+              height={32}
+              className="w-full h-full object-cover"
+              onError={handleImageError}
+              unoptimized // 画像最適化を無効化
+            />
+          </div>
+        ) : (
+          <div className="w-8 h-8 rounded-full bg-gray-200/80 flex items-center justify-center flex-shrink-0">
+            <User className="h-5 w-5 text-gray-500" />
+          </div>
+        )}
+        <div className="flex flex-col flex-grow min-w-0">
+          <h4 className="font-medium text-gray-800 truncate">{user.name}</h4>
+          <span className={`text-xs font-semibold ${mounted ? timeStyle : "text-blue-400"}`}>
+            経過: {displayTime}
+          </span>
+        </div>
+      </div>
+      
+      <div className="flex justify-between items-center mt-1 pl-10">
+        <p className="text-xs text-gray-600 truncate">{user.task || '作業中'}</p>
+        
+        {/* 自動退室時間が設定されている場合、コンパクトモードで表示 */}
+        {user.autoExitScheduled && (
+          <AutoExitStatus 
+            scheduledTime={typeof user.autoExitScheduled === 'string' 
+              ? user.autoExitScheduled 
+              : user.autoExitScheduled instanceof Date 
+                ? user.autoExitScheduled.toISOString() 
+                : null}
+            seatId={user.id}
+            roomId={roomId}
+            position={position}
+            isCompact={true}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="lib/sseUtils.ts">
 import { Db } from 'mongodb';
 
@@ -12997,6 +12303,574 @@ export class ChangeStreamManager {
 }
 </file>
 
+<file path="lib/youtube.ts">
+import { google, youtube_v3 } from 'googleapis';
+import { Db } from 'mongodb';
+import { messageTemplates } from './messages';
+import { scheduleAutoExit } from './autoExit';
+
+if (!process.env.YOUTUBE_API_KEY) {
+  throw new Error('Missing YOUTUBE_API_KEY environment variable');
+}
+
+// YouTube API の型定義
+export interface Author {
+  displayName: string;
+  profileImageUrl: string;
+  channelId: string;
+}
+
+export interface MessageSnippet {
+  displayMessage: string;
+  publishedAt: string;
+  authorDisplayName?: string;
+  authorPhotoUrl?: string;
+  authorChannelId?: {
+    value?: string;
+  };
+}
+
+export interface ChatItem {
+  id: string;
+  snippet: MessageSnippet;
+  authorDetails: Author;
+}
+
+export interface ChatResponse {
+  items: ChatItem[];
+  nextPageToken: string;
+  pollingIntervalMillis: number;
+}
+
+// API リクエストエラーの型
+export class YouTubeAPIError extends Error {
+  status?: number;
+  code?: string;
+  
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = 'YouTubeAPIError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+// API Keyを使ったYouTube APIの初期化
+const youtubeWithApiKey = google.youtube({
+  version: 'v3',
+  auth: process.env.YOUTUBE_API_KEY
+});
+
+// OAuth2クライアントの設定（OAuth認証が設定されている場合のみ使用）
+let oauth2Client: any;
+let youtubeWithOAuth: youtube_v3.Youtube | null = null;
+
+if (process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET && process.env.YOUTUBE_REDIRECT_URL) {
+  oauth2Client = new google.auth.OAuth2(
+    process.env.YOUTUBE_CLIENT_ID,
+    process.env.YOUTUBE_CLIENT_SECRET,
+    process.env.YOUTUBE_REDIRECT_URL
+  );
+
+  // リフレッシュトークンの設定（存在する場合）
+  if (process.env.YOUTUBE_REFRESH_TOKEN) {
+    oauth2Client.setCredentials({
+      refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
+    });
+  }
+
+  // OAuth2認証を使用したYouTube APIの初期化
+  youtubeWithOAuth = google.youtube({
+    version: 'v3',
+    auth: oauth2Client
+  });
+}
+
+/**
+ * ライブチャットIDを取得する（API Keyのみで実行可能）
+ * @param videoId 動画ID
+ * @returns ライブチャットID
+ */
+export async function getLiveChatId(videoId: string): Promise<string> {
+  try {
+    const response = await youtubeWithApiKey.videos.list({
+      part: ['liveStreamingDetails'],
+      id: [videoId]
+    });
+
+    const video = response.data.items && response.data.items[0];
+    if (!video || !video.liveStreamingDetails || !video.liveStreamingDetails.activeLiveChatId) {
+      throw new Error('ライブチャットIDが見つかりませんでした');
+    }
+
+    return video.liveStreamingDetails.activeLiveChatId;
+  } catch (error) {
+    console.error('ライブチャットID取得エラー:', error);
+    throw new Error('ライブチャットIDの取得に失敗しました');
+  }
+}
+
+/**
+ * YouTubeのライブチャットにメッセージを送信する（OAuth2認証が必要）
+ * @param liveChatId ライブチャットID
+ * @param message 送信するメッセージ
+ * @returns 送信結果
+ */
+export async function sendChatMessage(liveChatId: string, message: string) {
+  try {
+    // OAuth2認証が設定されていない場合はログのみ出力
+    if (!youtubeWithOAuth) {
+      console.log('OAuth2認証が設定されていないため、メッセージ送信をスキップします:', message);
+      return { success: false, message: 'OAuth2認証が設定されていません' };
+    }
+
+    const response = await youtubeWithOAuth.liveChatMessages.insert({
+      part: ['snippet'],
+      requestBody: {
+        snippet: {
+          liveChatId: liveChatId,
+          type: 'textMessageEvent',
+          textMessageDetails: {
+            messageText: message
+          }
+        }
+      }
+    });
+
+    console.log('メッセージ送信成功:', message);
+    return response.data;
+  } catch (error) {
+    console.error('メッセージ送信エラー:', error);
+    throw new Error('メッセージの送信に失敗しました');
+  }
+}
+
+/**
+ * ライブチャットのメッセージを取得する（API Keyのみで実行可能）
+ * @param liveChatId ライブチャットID
+ * @param pageToken ページトークン（続きを取得する場合）
+ * @returns チャットメッセージのレスポンス
+ */
+export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
+  try {
+    // API呼び出しでsnippetとauthorDetailsの両方を取得
+    const response = await youtubeWithApiKey.liveChatMessages.list({
+      part: ['snippet', 'authorDetails'],
+      liveChatId,
+      pageToken: pageToken || undefined,
+      maxResults: 100
+    });
+    
+    console.log(`[YouTube API] コメント取得: ${response.data.items?.length || 0}件`);
+    
+    // デバッグのため最初のコメントの構造を出力
+    if (response.data.items && response.data.items.length > 0) {
+      const firstItem = response.data.items[0];
+      console.log('[YouTube API] コメント構造サンプル:', 
+        JSON.stringify({
+          id: firstItem.id,
+          snippet: firstItem.snippet,
+          authorDetails: firstItem.authorDetails
+        }, null, 2).substring(0, 500) + '...');
+    }
+    
+    return response.data as ChatResponse;
+  } catch (error: any) {
+    console.error('Error getting live chat messages:', error?.response?.data || error);
+    throw new YouTubeAPIError(
+      `Failed to get live chat messages: ${error?.message || 'Unknown error'}`,
+      error?.response?.status,
+      error?.code
+    );
+  }
+}
+
+/**
+ * キャッシュされたライブチャットIDを保持するオブジェクト
+ * メモリ内キャッシュとして機能（サーバー再起動でリセット）
+ */
+export const liveChatIdCache: Record<string, string> = {};
+
+// プロフィール画像URLを検証する関数
+function isValidImageUrl(url?: string | null): boolean {
+  return Boolean(url && typeof url === 'string' && url.startsWith('http'));
+}
+
+/**
+ * YouTubeコメントを処理してコマンドとして実行する
+ * @param commentText コメントテキスト
+ * @param username ユーザー名
+ * @param authorId 著者ID (YouTubeチャンネルID)
+ * @param db MongoDBインスタンス
+ * @param videoId ビデオID
+ * @param profileImageUrl プロフィール画像URL
+ * @returns 処理結果
+ */
+export async function processYouTubeComment(
+  commentText: string,
+  username: string,
+  authorId: string,
+  db: Db,
+  videoId?: string,
+  profileImageUrl?: string
+) {
+  console.log(`[YouTube] Processing comment from ${username}: ${commentText}`);
+  // コマンドとタスク名を抽出
+  const trimmedComment = commentText.trim();
+  let command = '';
+  let taskName = '';
+
+  if (trimmedComment.startsWith('/work ')) {
+    command = 'work';
+    taskName = trimmedComment.substring(6).trim();
+  } else if (trimmedComment === '/finish') {
+    command = 'finish';
+  } else {
+    // コマンドでない場合は処理しない
+    return { success: false, message: 'コメントはコマンドではありません' };
+  }
+
+  // コマンド処理を実行
+  try {
+    const result = await processCommand(command, username, db, videoId, undefined, authorId, taskName, profileImageUrl);
+    return { success: true, result };
+  } catch (error) {
+    console.error(`[YouTube] Error processing comment as command:`, error);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+/**
+ * コマンドを処理する共通関数
+ * YouTube APIとWeb UIの両方から使用される
+ * 
+ * @param command コマンド文字列（work, finishなど）
+ * @param username ユーザー名
+ * @param db MongoDBインスタンス
+ * @param videoId オプションのYouTubeビデオID
+ * @param liveChatId オプションのライブチャットID
+ * @param authorId オプションのユーザーID（YouTubeチャンネルIDなど）
+ * @param taskName オプションのタスク名（workコマンド用）
+ * @param profileImageUrl オプションのプロフィール画像URL
+ * @returns 処理結果のオブジェクト
+ */
+export async function processCommand(
+  command: string,
+  username: string,
+  db: Db,
+  videoId?: string,
+  liveChatId?: string,
+  authorId?: string,
+  taskName?: string,
+  profileImageUrl?: string
+) {
+  console.log(`[Command] Processing command: ${command} from ${username}`);
+  
+  // より詳細なデバッグ情報を出力
+  console.log(`[Command] DEBUG - Command details:`, {
+    command,
+    username,
+    authorId: authorId || 'not provided',
+    taskName: taskName || 'not provided',
+    profileImageUrl: profileImageUrl || 'not provided',
+    hasValidProfileImage: isValidImageUrl(profileImageUrl)
+  });
+  
+  // プロフィール画像URLをログに記録、検証
+  if (profileImageUrl) {
+    if (isValidImageUrl(profileImageUrl)) {
+      console.log(`[Command] Valid profile image URL received: ${profileImageUrl}`);
+    } else {
+      console.warn(`[Command] Invalid profile image URL received: ${profileImageUrl}`);
+      profileImageUrl = undefined; // 無効なURLはundefinedに設定
+    }
+  }
+  
+  const seatsCollection = db.collection('seats');
+  const notificationsCollection = db.collection('notifications');
+  
+  // ライブチャットIDが指定されていない場合で、videoIdが指定されている場合、取得を試みる
+  if (!liveChatId && videoId) {
+    try {
+      liveChatId = await getLiveChatId(videoId);
+    } catch (error) {
+      console.warn('[Command] Failed to get liveChatId, notifications will be disabled:', error);
+      // 通知は送れなくても処理は続行
+    }
+  }
+  
+  // OAuth認証が設定されているかをチェック
+  const isOAuthConfigured = !!youtubeWithOAuth;
+  
+  // システムメッセージをMongoDBに保存する関数（SSEで検知される）
+  const saveSystemMessage = async (message: string, type: 'info' | 'warning' | 'error' = 'info') => {
+    try {
+      await notificationsCollection.insertOne({
+        message,
+        type,
+        timestamp: new Date(),
+        id: `${Date.now()}-${Math.random()}`, // ユニークID
+        isRead: false
+      });
+      console.log(`[Command] System message saved: ${message}`);
+    } catch (err) {
+      console.error('[Command] Failed to save system message:', err);
+    }
+  };
+  
+  // コマンドタイプに応じた処理
+  if (command === 'work') {
+    if (!taskName) {
+      throw new Error('タスク名が指定されていません');
+    }
+    
+    console.log(`[Command] /work command execution: ${username} - Task: ${taskName}`);
+    
+    // ユーザーIDが指定されている場合、それを使用してユーザーを識別
+    // 指定されていない場合は、ユーザー名で識別
+    const userQuery = authorId ? { authorId } : { username };
+    
+    // まず、同じユーザーのアクティブなセッションがあるか確認
+    const existingSeat = await seatsCollection.findOne({
+      ...userQuery,
+      is_active: true
+    });
+
+    // タスク名が変わっているか確認
+    console.log(`[Command] Existing seat task: ${existingSeat?.task}`);
+    console.log(`[Command] Task name: ${taskName}`);
+    if (existingSeat && existingSeat.task === taskName) {
+      console.log(`[Command] Task name has changed from ${existingSeat.task} to ${taskName}`);
+      return {
+        success: true,
+        action: 'update',
+        seat: {
+          roomId: 'focus-room',
+          position: existingSeat.position,
+          username: username,
+          task: taskName,
+          id: existingSeat._id.toString()
+        }
+      };
+    }
+    
+    if (existingSeat) {
+      // 既存のアクティブセッションが見つかった場合、タスク名だけを更新
+      console.log(`[Command] Found existing active session for ${username}, updating task name only`);
+      
+      const updateResult = await seatsCollection.findOneAndUpdate(
+        { _id: existingSeat._id },
+        { 
+          $set: { 
+            task: taskName,
+            timestamp: new Date()
+          } 
+        },
+        { returnDocument: 'after' }
+      );
+      
+      // システムメッセージを保存（SSEで検知される）
+      await saveSystemMessage(`${username}さんがタスクを「${taskName}」に更新しました`, 'info');
+      
+      return {
+        success: true,
+        action: 'update',
+        seat: {
+          roomId: 'focus-room',
+          position: existingSeat.position,
+          username: username,
+          task: taskName,
+          id: existingSeat._id.toString()
+        }
+      };
+    }
+    
+    // 以下は既存のセッションが見つからない場合の処理（新規入室）
+    // 同じユーザーの既存のアクティブセッションがない場合のみ新しく作成
+    if (authorId) {
+      const deactivateResult = await seatsCollection.updateMany(
+        { ...userQuery, is_active: true },
+        { 
+          $set: { 
+            is_active: false,
+            exitTime: new Date(),
+            timestamp: new Date()
+          } 
+        }
+      );
+      
+      console.log(`[Command] Deactivated ${deactivateResult.modifiedCount} existing sessions for ${username}`);
+    }
+    
+    const enterTime = new Date();
+    
+    // 新しい座席を作成する
+    // 最大の座席番号を取得して次の番号を割り当て
+    const lastSeat = await seatsCollection.find().sort({ position: -1 }).limit(1).toArray();
+    const newPosition = lastSeat.length > 0 ? lastSeat[0].position + 1 : 1;
+    
+    // 新しい座席を作成
+    const newSeat: Record<string, any> = {
+      position: newPosition,
+      username: username,
+      authorId: authorId,
+      task: taskName,
+      enterTime: enterTime,
+      is_active: true,
+      exitTime: null,
+      timestamp: new Date(),
+      created_at: new Date()
+    };
+    
+    // 有効なプロフィール画像URLが提供された場合のみ設定
+    if (isValidImageUrl(profileImageUrl)) {
+      newSeat.profileImageUrl = profileImageUrl;
+      console.log(`[Command] Adding profile image URL to new created seat: ${profileImageUrl}`);
+    } else {
+      console.log(`[Command] No valid profile image URL to add to newly created seat`);
+    }
+    
+    console.log(`[Command] Creating new seat:`, newSeat);
+    
+    const insertResult = await seatsCollection.insertOne(newSeat);
+    
+    console.log(`[Command] New seat created:`, {
+      insertedId: insertResult.insertedId.toString(),
+      acknowledged: insertResult.acknowledged
+    });
+    
+    // 作成した座席のデータを取得して確認
+    const createdSeat = await seatsCollection.findOne({ _id: insertResult.insertedId });
+    console.log(`[Command] Newly created seat data:`, {
+      id: createdSeat?._id.toString(),
+      username: createdSeat?.username,
+      profileImageUrl: createdSeat?.profileImageUrl,
+      hasProfileImage: !!createdSeat?.profileImageUrl
+    });
+    
+    // 自動退室時間を設定
+    await scheduleAutoExit(db, newPosition, 2);
+    
+    console.log(`[Command] Created new seat: Room focus-room, Position ${newPosition} for ${username} (Task: ${taskName})`);
+    
+    // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
+    if (liveChatId && isOAuthConfigured) {
+      try {
+        await sendChatMessage(
+          liveChatId, 
+          messageTemplates.seatTaken(username, 'focus-room', newPosition, taskName)
+        );
+      } catch (error) {
+        console.warn('[Command] Failed to send message, continuing without notification:', error);
+        // メッセージ送信に失敗しても処理は続行
+      }
+    }
+    
+    // システムメッセージを保存（SSEで検知される）
+    await saveSystemMessage(`${username}さんが「${taskName}」で入室しました`, 'info');
+    
+    return {
+      success: true,
+      action: 'create',
+      seat: {
+        roomId: 'focus-room',
+        position: newPosition,
+        username: username,
+        task: taskName,
+        id: insertResult.insertedId.toString()
+      }
+    };
+  } else if (command === 'finish') {
+    console.log(`[Command] /finish command execution: ${username}`);
+    
+    // ユーザーIDかユーザー名でアクティブな座席を検索
+    const userQuery = authorId 
+      ? { authorId, is_active: true } 
+      : { username, is_active: true };
+    
+    try {
+      // ユーザーの座席を検索し、非アクティブに設定
+      const result = await seatsCollection.findOneAndUpdate(
+        userQuery,
+        { 
+          $set: { 
+            is_active: false,
+            exitTime: new Date(),
+            timestamp: new Date()
+          } 
+        },
+        { returnDocument: 'before' } // 更新前の情報を取得
+      );
+      
+      if (result.value && result.value.username) {
+        console.log(`[Command] ${username} has left the seat`);
+        
+        // 退室メッセージを送信（OAuth認証が設定されている場合のみ）
+        if (liveChatId && isOAuthConfigured) {
+          try {
+            await sendChatMessage(
+              liveChatId, 
+              messageTemplates.seatVacated(username, 'focus-room', result.value.position)
+            );
+          } catch (error) {
+            console.warn('[Command] Failed to send message, continuing without notification:', error);
+            // メッセージ送信に失敗しても処理は続行
+          }
+        }
+        
+        // システムメッセージを保存（SSEで検知される）
+        await saveSystemMessage(`${username}さんが退室しました`, 'info');
+        
+        return {
+          success: true,
+          action: 'exit',
+          seat: {
+            roomId: 'focus-room',
+            position: result.value.position,
+            previousUsername: username
+          }
+        };
+      } else {
+        console.log(`[Command] ${username} was not seated`);
+        // 入室していない場合は特に何もしない
+        return {
+          success: true,
+          action: 'none',
+          message: 'ユーザーは入室していませんでした'
+        };
+      }
+    } catch (error) {
+      console.error(`[Command] Error while processing exit for ${username}:`, error);
+      throw new Error('退室処理に失敗しました: ' + (error as Error).message);
+    }
+  } else {
+    console.log(`[Command] Unsupported command: ${command}`);
+    throw new Error('対応していないコマンドです');
+  }
+}
+</file>
+
+<file path="next.config.js">
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  images: { 
+    unoptimized: true,
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'yt3.ggpht.com',
+        pathname: '**',
+      },
+    ],
+  },
+};
+
+module.exports = nextConfig;
+</file>
+
 <file path="package.json">
 {
   "name": "nextjs",
@@ -13098,6 +12972,374 @@ export class ChangeStreamManager {
 }
 </file>
 
+<file path="app/api/youtube-comments/route.ts">
+import { NextResponse } from 'next/server';
+// CommonJS形式のライブラリをインポート
+import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
+import { detectCommand } from '@/lib/utils';
+import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
+
+// このAPIルートを動的に処理するための設定
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+// インメモリキャッシュ（サーバー再起動時にリセットされます）
+const liveChatIdCache: Record<string, string> = {};
+
+// エラーバックオフのための状態管理
+const errorState = {
+  lastErrorTime: 0,
+  quotaExceeded: false,
+  backoffUntil: 0,
+  consecutiveErrors: 0
+};
+
+// コメントアイテムの型定義
+interface ChatItem {
+  id: string;
+  snippet?: {
+    displayMessage?: string;
+    publishedAt?: string;
+    authorDisplayName?: string;
+    authorPhotoUrl?: string;
+    authorChannelId?: {
+      value?: string;
+    };
+  };
+  authorDetails?: {
+    displayName?: string;
+    profileImageUrl?: string;
+    channelId?: string;  // チャンネルID（ユーザー識別用）
+  };
+}
+
+/**
+ * YouTubeライブコメント取得API
+ * コメント取得のみを担当し、コマンド実行（DB更新）は行わない
+ */
+export async function GET() {
+  try {
+    // 現在時刻が backoffUntil を下回る場合はエラーを返す（APIリクエスト抑制）
+    const now = Date.now();
+    if (now < errorState.backoffUntil) {
+      const remainingSeconds = Math.ceil((errorState.backoffUntil - now) / 1000);
+      console.log(`[Comments API] APIリクエスト抑制中 (残り${remainingSeconds}秒)`);
+      return NextResponse.json({ 
+        error: `APIクォータ超過のため一時的に利用できません。(残り${remainingSeconds}秒)`,
+        commands: [],
+        backoff: true,
+        remainingSeconds
+      }, { status: 429 });
+    }
+
+    // 環境変数から動画IDを取得
+    console.log('[Comments API] コメント取得開始');
+    const videoId = process.env.YOUTUBE_VIDEO_ID;
+    // BOTのチャンネルID（環境変数から取得または直接指定）
+    const botChannelId = process.env.YOUTUBE_BOT_CHANNEL_ID || '';
+    const adminChannelId = process.env.ADMIN_YOUTUBE_CHANNEL_ID; // 運営者IDを取得
+    
+    if (!videoId) {
+      return NextResponse.json({ error: 'YOUTUBE_VIDEO_IDが設定されていません' }, { status: 400 });
+    }
+    
+    // キャッシュからliveChatIdを取得
+    let liveChatId = liveChatIdCache[videoId];
+    let usedCache = false;
+    
+    // キャッシュにない場合のみAPIを呼び出し
+    if (!liveChatId) {
+      try {
+        console.log(`[Comments API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
+        const fetchedLiveChatId = await getLiveChatId(videoId);
+        
+        if (fetchedLiveChatId) {
+          // キャッシュに保存
+          liveChatId = fetchedLiveChatId;
+          console.log(`[Comments API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
+          liveChatIdCache[videoId] = liveChatId;
+          
+          // エラー状態をリセット
+          errorState.consecutiveErrors = 0;
+          errorState.quotaExceeded = false;
+        } else {
+          return NextResponse.json({ error: 'ライブチャットIDが取得できませんでした' }, { status: 404 });
+        }
+      } catch (error: any) {
+        // API呼び出しに失敗した場合のエラーハンドリング
+        console.error('[Comments API] ライブチャットID取得エラー:', error);
+        
+        // クォータ超過エラーの場合、長めのバックオフを設定
+        if (error?.message?.includes('quota') || error?.response?.status === 403 || 
+            error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
+          
+          errorState.quotaExceeded = true;
+          errorState.lastErrorTime = now;
+          
+          // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
+          const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
+          errorState.backoffUntil = now + backoffTime;
+          errorState.consecutiveErrors++;
+          
+          console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+          
+          return NextResponse.json({ 
+            error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
+            commands: [],
+            backoff: true
+          }, { status: 429 });
+        }
+        
+        // その他のエラーの場合
+        errorState.consecutiveErrors++;
+        
+        if (errorState.consecutiveErrors > 3) {
+          // 連続エラー回数が多い場合は一時的にバックオフ
+          const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+          errorState.backoffUntil = now + backoffTime;
+          
+          console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+          
+          return NextResponse.json({ 
+            error: `YouTube APIに接続できません。${backoffTime / 60000}分後に再試行してください。`,
+            commands: [],
+            backoff: true
+          }, { status: 503 });
+        }
+        
+        return NextResponse.json({ error: 'ライブチャットIDの取得に失敗しました' }, { status: 500 });
+      }
+    } else {
+      console.log(`[Comments API] キャッシュからliveChatIdを取得しました (videoId: ${videoId}, liveChatId: ${liveChatId})`);
+      usedCache = true;
+    }
+    
+    // ページトークンをクエリから取得（初回は null）
+    const pageToken = null; // 注: 実装を簡単にするため固定
+    
+    // コメントデータを取得
+    let chatData;
+    try {
+      chatData = await getLiveChatMessages(liveChatId, pageToken);
+      
+      // 成功したらエラーカウントをリセット
+      errorState.consecutiveErrors = 0;
+    } catch (error: any) {
+      console.error('[Comments API] コメント取得エラー:', error);
+      
+      // クォータ超過エラーの場合
+      if (error?.message?.includes('quota') || error?.response?.status === 403 || 
+          error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
+        
+        errorState.quotaExceeded = true;
+        errorState.lastErrorTime = now;
+        
+        // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
+        const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
+        errorState.backoffUntil = now + backoffTime;
+        errorState.consecutiveErrors++;
+        
+        console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+        
+        return NextResponse.json({ 
+          error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
+          commands: [],
+          backoff: true
+        }, { status: 429 });
+      }
+      
+      // その他のエラーの場合
+      errorState.consecutiveErrors++;
+      
+      // 連続エラーが続く場合はバックオフを設定
+      if (errorState.consecutiveErrors > 3) {
+        const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+        errorState.backoffUntil = now + backoffTime;
+        
+        return NextResponse.json({ 
+          error: `コメントの取得に失敗しました。${backoffTime / 60000}分後に再試行してください。`,
+          commands: [],
+          backoff: true
+        }, { status: 503 });
+      }
+      
+      return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
+    }
+    
+    // 検出済みコマンドの配列を準備
+    const detectedCommands = [];
+    const client = await clientPromise; // MongoDBクライアントを取得
+    const db = client.db('coworking'); // データベースを選択
+    const announcementsCollection = db.collection('announcements'); // コレクションを選択
+    const processedCommentsCollection = db.collection('processedComments'); // 処理済みコメント用コレクション
+
+    // TTLインデックスが存在するか確認し、なければ作成（処理済みコメントを1週間後に自動削除）
+    try {
+      const indexes = await processedCommentsCollection.indexInformation();
+      if (!indexes.processedAt_1) {
+        await processedCommentsCollection.createIndex({ processedAt: 1 }, { 
+          expireAfterSeconds: 604800, // 1週間
+          name: 'processedAt_1'
+        });
+        console.log('[Comments API] 処理済みコメントのTTLインデックスを作成しました');
+      }
+    } catch (indexError) {
+      console.error('[Comments API] インデックス確認・作成エラー:', indexError);
+      // エラーが発生しても処理を続行
+    }
+
+    // コメントごとにコマンド検出を行う
+    for (const item of chatData.items || []) {
+      const commentId = item.id;
+      console.log('[Comments API] コメントID:', commentId);
+      const commentText = item.snippet?.displayMessage || '';
+      const publishedAt = item.snippet?.publishedAt; // YouTube上の公開日時
+      
+      // API構造に応じて投稿者情報を取得（snippetとauthorDetailsの両方をチェック）
+      const authorName = item.snippet?.authorDisplayName || item.authorDetails?.displayName;
+      const authorId = (item.snippet?.authorChannelId?.value) || item.authorDetails?.channelId;
+      const profileImageUrl = item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl;
+      
+      // 以下の条件でコメント処理をスキップ
+      // 1. 投稿者情報がない
+      // 2. 既に処理済みのコメント
+      // 3. BOT自身の投稿
+      if (!authorName || !authorId) continue; // 投稿者情報がない場合はスキップ
+      
+      // MongoDB で処理済みコメントをチェック
+      const processedComment = await processedCommentsCollection.findOne({ commentId });
+      if (processedComment) {
+        console.log(`[Comments API] スキップ: 既に処理済みのコメント (ID: ${commentId})`);
+        continue;
+      }
+      
+      if (botChannelId && authorId === botChannelId) {
+        console.log(`[Comments API] スキップ: BOT自身の投稿 (ID: ${commentId})`);
+        // BOT自身の投稿はDBに追加して今後処理しないようにする
+        await processedCommentsCollection.insertOne({
+          commentId,
+          authorId,
+          isBot: true,
+          processedAt: new Date()
+        });
+        continue;
+      }
+      
+      console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
+      // console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`); // 必要ならログ出力
+      
+      // ★★★ 運営者コメントか判定 ★★★
+      if (adminChannelId && authorId === adminChannelId) {
+        console.log(`[Comments API] お知らせコメント検出: ${authorName} - ${commentText}`);
+        try {
+          // コメントの重複チェック
+          const existingAnnouncement = await announcementsCollection.findOne({
+            message: commentText,
+            authorChannelId: authorId
+          });
+          if (existingAnnouncement) {
+            console.log(`[Comments API] 重複コメント: ${commentText}`);
+            continue; // 重複コメントはスキップ
+          }
+          // お知らせをDBに保存
+          await announcementsCollection.insertOne({
+            message: commentText,
+            authorChannelId: authorId,
+            authorName: authorName, // 念のため名前も保存
+            profileImageUrl: profileImageUrl, // プロフィール画像も保存
+            publishedAt: publishedAt ? new Date(publishedAt) : new Date(), // 日付形式に変換
+            createdAt: new Date(), // サーバーでの保存日時
+          });
+          console.log(`[Comments API] お知らせをDBに保存しました: ${commentText}`);
+          
+          // 処理済みとしてDBに保存
+          await processedCommentsCollection.insertOne({
+            commentId,
+            authorId,
+            isAnnouncement: true,
+            processedAt: new Date()
+          });
+        } catch (dbError) {
+          console.error('[Comments API] お知らせのDB保存エラー:', dbError);
+          // エラーが発生しても処理を続行する（他のコメントに影響を与えない）
+        }
+        // 運営者コメントはお知らせ専用なので、コマンド検出は行わない
+        continue; // 次のコメントへ
+      }
+
+      // --- 運営者コメントでない場合の処理 ---
+      // コマンド検出
+      const { command, taskName } = detectCommand(commentText);
+      
+      if (command) {
+        // コマンドを検出した場合、コマンド情報を配列に追加
+        detectedCommands.push({
+          command,
+          taskName,
+          authorName,
+          authorId,
+          commentId,
+          commentText,
+          profileImageUrl
+        });
+        
+        console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
+        
+        // 処理済みとしてDBに保存
+        await processedCommentsCollection.insertOne({
+          commentId,
+          authorId,
+          command,
+          taskName,
+          processedAt: new Date()
+        });
+      }
+      // コマンドがない通常のコメントは処理しない（必要に応じてここで処理を追加）
+    }
+    
+    // コメントデータを整形 (UI表示用)
+    const comments = chatData.items?.map((item: ChatItem) => ({
+      id: item.id,
+      author: item.snippet?.authorDisplayName || item.authorDetails?.displayName || '不明なユーザー',
+      profileImageUrl: item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl,
+      text: item.snippet?.displayMessage || '',
+      publishedAt: item.snippet?.publishedAt
+    })) || [];
+    
+    return NextResponse.json({
+      comments,
+      commands: detectedCommands,
+      nextPageToken: chatData.nextPageToken,
+      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000,
+      usedCache // キャッシュを使用したかどうかを返す
+    });
+    
+  } catch (error) {
+    console.error('[Comments API] YouTube API エラー:', error);
+    
+    // エラーカウントを増やす
+    errorState.consecutiveErrors++;
+    
+    // 連続エラーが多い場合はバックオフを設定
+    if (errorState.consecutiveErrors > 3) {
+      const now = Date.now();
+      const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+      errorState.backoffUntil = now + backoffTime;
+      
+      console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
+      
+      return NextResponse.json({ 
+        error: `サービスが一時的に利用できません。${backoffTime / 60000}分後に再試行してください。`,
+        commands: [],
+        backoff: true
+      }, { status: 503 });
+    }
+    
+    return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
+  }
+}
+</file>
+
 <file path="app/page.tsx">
 "use client";
 
@@ -13106,7 +13348,6 @@ import Room from "@/components/Room";
 import { Card } from "@/components/ui/card";
 import FocusRoom from "@/components/FocusRoom";
 import Header from "@/components/Header";
-import BGMPlayer from "@/components/BGMPlayer";
 import NotificationTicker, { Notification } from "@/components/NotificationTicker";
 import AnnouncementsTicker from "@/components/AnnouncementsTicker";
 import { toast } from "@/hooks/use-toast";
@@ -13186,6 +13427,7 @@ export default function Home() {
     console.log('[Page] handleSeatDataMessage called. Received data:', JSON.stringify(data, null, 2));
 
     if (data.rooms && Array.isArray(data.rooms)) {
+      console.log('[Page] Received data:', data);
       console.log(`[Page] Received ${data.rooms.length} rooms from SSE. Updating state...`);
       setRooms(data.rooms);
     } else if (data.error) {
