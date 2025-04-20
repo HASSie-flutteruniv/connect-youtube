@@ -95,7 +95,8 @@ export default function Header({ videoId, onVideoIdChange }: { videoId: string; 
   const [mounted, setMounted] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [inputVideoId, setInputVideoId] = useState(videoId || "");
-  
+  const [isSubmitting, setIsSubmitting] = useState(false); // 送信中の状態管理
+
   // ポモドーロタイマーの状態を取得
   const {
     mode,
@@ -104,6 +105,11 @@ export default function Header({ videoId, onVideoIdChange }: { videoId: string; 
     progress,
     currentMode
   } = usePomodoro();
+
+  // videoId propが変更されたらinputVideoIdも更新
+  useEffect(() => {
+    setInputVideoId(videoId || "");
+  }, [videoId]);
 
   // マウント状態を設定
   useEffect(() => {
@@ -118,6 +124,46 @@ export default function Header({ videoId, onVideoIdChange }: { videoId: string; 
       clearInterval(timer);
     };
   }, []);
+
+  // videoIDを設定する処理
+  const handleSetVideoId = async () => {
+    const newVideoId = inputVideoId.trim();
+    
+    // 変更がない、または無効な値、送信中の場合は処理しない
+    if (!newVideoId || newVideoId === videoId || isSubmitting) {
+      return;
+    }
+    
+    setIsSubmitting(true);
+    
+    try {
+      // 1. Negative Cacheをクリア
+      console.log(`[Header] Clearing negative cache for videoId: ${newVideoId}`);
+      const response = await fetch('/api/clear-youtube-cache', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ videoId: newVideoId }),
+      });
+      
+      if (!response.ok) {
+        console.warn(`[Header] Failed to clear negative cache. Status: ${response.status}`);
+        // キャッシュクリアに失敗しても、videoIdの設定は続行する
+      } else {
+        console.log(`[Header] Successfully cleared negative cache for: ${newVideoId}`);
+      }
+      
+      // 2. 親コンポーネントにvideoId変更を通知
+      onVideoIdChange(newVideoId);
+      console.log(`[Header] Video ID set to: ${newVideoId}`);
+      
+    } catch (error) {
+      console.error('[Header] Error setting video ID:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   // 曜日と日付のフォーマット
   const dateString = format(currentTime, "yyyy年MM月dd日(E)", { locale: ja });
@@ -146,7 +192,7 @@ export default function Header({ videoId, onVideoIdChange }: { videoId: string; 
           <form
             onSubmit={e => {
               e.preventDefault();
-              onVideoIdChange(inputVideoId.trim());
+              handleSetVideoId(); // 新しい処理関数を使用
             }}
             className="flex items-center gap-2 relative z-[101]"
           >
@@ -156,13 +202,14 @@ export default function Header({ videoId, onVideoIdChange }: { videoId: string; 
               onChange={e => setInputVideoId(e.target.value)}
               placeholder="YouTube動画ID"
               className="border border-gray-300 rounded px-2 py-1 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-md pointer-events-auto"
+              disabled={isSubmitting} // 送信中は入力を無効化
             />
             <button
               type="submit"
-              className="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm shadow-md pointer-events-auto"
-              disabled={!inputVideoId.trim() || inputVideoId.trim() === videoId}
+              className="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm shadow-md pointer-events-auto disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!inputVideoId.trim() || inputVideoId.trim() === videoId || isSubmitting} // 送信中は無効化
             >
-              設定
+              {isSubmitting ? "設定中..." : "設定"}
             </button>
           </form>
           

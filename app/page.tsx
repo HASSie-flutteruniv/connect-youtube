@@ -29,19 +29,6 @@ import LargeLogo from "@/components/LargeLogo";
 
 const MAX_NOTIFICATIONS = 20;
 
-// SSEデータの型
-// interface SSEData {
-//   rooms: RoomData[];
-//   error?: string;
-// }
-
-// システムメッセージの型
-// interface SystemMessagePayload {
-//   message: string;
-//   type: 'info' | 'warning' | 'error';
-//   timestamp: string; // ISO String
-//   id?: string; // バックエンドでユニークIDを付与するのが望ましい
-// }
 
 export default function Home() {
   // YouTubeの動画ID

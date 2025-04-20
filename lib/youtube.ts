@@ -2,6 +2,7 @@ import { google, youtube_v3 } from 'googleapis';
 import { Db } from 'mongodb';
 import { messageTemplates } from './messages';
 import { scheduleAutoExit } from './autoExit';
+import { youtubeApiClient } from './youtubeApiClient';
 
 if (!process.env.YOUTUBE_API_KEY) {
   throw new Error('Missing YOUTUBE_API_KEY environment variable');

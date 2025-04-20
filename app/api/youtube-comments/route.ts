@@ -3,13 +3,11 @@ import { NextResponse } from 'next/server';
 import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
 import { detectCommand } from '@/lib/utils';
 import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
+import { youtubeApiClient } from '@/lib/youtubeApiClient';
 
 // このAPIルートを動的に処理するための設定
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-// インメモリキャッシュ（サーバー再起動時にリセットされます）
-const liveChatIdCache: Record<string, string> = {};
 
 // エラーバックオフのための状態管理
 const errorState = {
@@ -74,87 +72,14 @@ export async function GET(request: Request) {
       }, { status: 400 });
     }
     
-    // キャッシュからliveChatIdを取得
-    let liveChatId = liveChatIdCache[videoId];
-    let usedCache = false;
-    
-    // キャッシュにない場合のみAPIを呼び出し
-    if (!liveChatId) {
-      try {
-        console.log(`[Comments API] liveChatIdのキャッシュがないため、API経由で取得します (videoId: ${videoId})`);
-        const fetchedLiveChatId = await getLiveChatId(videoId);
-        
-        if (fetchedLiveChatId) {
-          // キャッシュに保存
-          liveChatId = fetchedLiveChatId;
-          console.log(`[Comments API] liveChatIdをキャッシュに保存します (videoId: ${videoId}, liveChatId: ${liveChatId})`);
-          liveChatIdCache[videoId] = liveChatId;
-          
-          // エラー状態をリセット
-          errorState.consecutiveErrors = 0;
-          errorState.quotaExceeded = false;
-        } else {
-          return NextResponse.json({ 
-            error: 'ライブチャットIDが取得できませんでした。動画IDが正しいか、ライブ配信中か確認してください。',
-            commands: []
-          }, { status: 404 });
-        }
-      } catch (error: any) {
-        // API呼び出しに失敗した場合のエラーハンドリング
-        console.error('[Comments API] ライブチャットID取得エラー:', error);
-        
-        // クォータ超過エラーの場合、長めのバックオフを設定
-        if (error?.message?.includes('quota') || error?.response?.status === 403 || 
-            error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
-          
-          errorState.quotaExceeded = true;
-          errorState.lastErrorTime = now;
-          
-          // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
-          const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
-          errorState.backoffUntil = now + backoffTime;
-          errorState.consecutiveErrors++;
-          
-          console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-          
-          return NextResponse.json({ 
-            error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
-            commands: [],
-            backoff: true
-          }, { status: 429 });
-        }
-        
-        // その他のエラーの場合
-        errorState.consecutiveErrors++;
-        
-        if (errorState.consecutiveErrors > 3) {
-          // 連続エラー回数が多い場合は一時的にバックオフ
-          const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
-          errorState.backoffUntil = now + backoffTime;
-          
-          console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-          
-          return NextResponse.json({ 
-            error: `YouTube APIに接続できません。${backoffTime / 60000}分後に再試行してください。`,
-            commands: [],
-            backoff: true
-          }, { status: 503 });
-        }
-        
-        return NextResponse.json({ error: 'ライブチャットIDの取得に失敗しました' }, { status: 500 });
-      }
-    } else {
-      console.log(`[Comments API] キャッシュからliveChatIdを取得しました (videoId: ${videoId}, liveChatId: ${liveChatId})`);
-      usedCache = true;
-    }
-    
-    // ページトークンをクエリから取得（初回は null）
-    const pageToken = null; // 注: 実装を簡単にするため固定
+    // ページトークンをクエリから取得（初回は undefined）
+    const pageToken = undefined; // 型エラー回避のためnull→undefined
     
     // コメントデータを取得
     let chatData;
     try {
-      chatData = await getLiveChatMessages(liveChatId, pageToken);
+      const liveChatId = await youtubeApiClient.getLiveChatId(videoId);
+      chatData = await youtubeApiClient.getLiveChatMessages(liveChatId, pageToken);
       
       // 成功したらエラーカウントをリセット
       errorState.consecutiveErrors = 0;
@@ -191,7 +116,7 @@ export async function GET(request: Request) {
         errorState.backoffUntil = now + backoffTime;
         
         return NextResponse.json({ 
-          error: `コメントの取得に失敗しました。${backoffTime / 60000}分後に再試行してください。`,
+          error: `YouTube APIに接続できません。${backoffTime / 60000}分後に再試行してください。`,
           commands: [],
           backoff: true
         }, { status: 503 });
@@ -344,8 +269,7 @@ export async function GET(request: Request) {
       comments,
       commands: detectedCommands,
       nextPageToken: chatData.nextPageToken,
-      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000,
-      usedCache // キャッシュを使用したかどうかを返す
+      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000
     });
     
   } catch (error) {

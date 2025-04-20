@@ -1,5 +1,5 @@
 import { Db } from 'mongodb';
-import { sendChatMessage, getLiveChatId } from '@/lib/youtube';
+import { youtubeApiClient } from '@/lib/youtubeApiClient';
 import { messageTemplates } from '@/lib/messages';
 
 /**
@@ -46,7 +46,6 @@ export async function checkAndProcessAutoExit(
     
     console.log(`[AutoExit] ${currentTime.toISOString()}に自動退室チェックを実行`);
     
-    // 期限切れの座席を検索（入室中かつ自動退室時間が現在時刻より前）
     const expiredSeats = await seatsCollection.find({
       username: { $ne: null },
       is_active: true, // アクティブな座席のみを対象とする
@@ -62,31 +61,28 @@ export async function checkAndProcessAutoExit(
     
     // YouTube通知のための準備
     let liveChatId: string | null = null;
-    if (sendNotification) {
-      const videoId = process.env.YOUTUBE_VIDEO_ID;
-      if (videoId) {
-        try {
-          liveChatId = await getLiveChatId(videoId);
-        } catch (error) {
-          console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました:', error);
-        }
+    const videoId = process.env.YOUTUBE_VIDEO_ID;
+    const isOAuthConfigured = youtubeApiClient.isOAuthConfigured();
+    if (sendNotification && videoId && isOAuthConfigured) {
+      try {
+        liveChatId = await youtubeApiClient.getLiveChatId(videoId);
+      } catch (error) {
+        console.error('[AutoExit] YouTubeのliveChatID取得中にエラーが発生しました (ApiClient):', error);
       }
     }
     
-    // 各座席を処理
     for (const seat of expiredSeats) {
       const username = seat.username;
       const position = seat.position;
-      const roomId = 'focus-room'; // 固定値としてfocus-roomを使用
+      const roomId = 'focus-room';
       
       try {
-        // 座席を非アクティブに設定（退室処理）
         await seatsCollection.updateOne(
           { _id: seat._id },
           { 
             $set: { 
-              is_active: false, // 非アクティブに設定
-              exitTime: new Date(), // 退室時間を記録
+              is_active: false,
+              exitTime: new Date(),
               autoExitScheduled: null,
               timestamp: new Date()
             } 
@@ -95,12 +91,17 @@ export async function checkAndProcessAutoExit(
         
         console.log(`[AutoExit] ${username}を自動退室しました (部屋: ${roomId}, 座席: ${position})`);
         
-        // 自動退室メッセージをYouTubeチャットに送信（設定されている場合）
-        if (sendNotification && liveChatId && username) {
-          await sendChatMessage(
-            liveChatId, 
-            messageTemplates.autoExited(username, roomId, position)
-          );
+        if (liveChatId && username) {
+          try {
+            await youtubeApiClient.sendChatMessage(
+              liveChatId, 
+              messageTemplates.autoExited(username, roomId, position)
+            );
+          } catch(sendError) {
+            console.error(`[AutoExit] 座席(${position})の自動退室メッセージ送信中にエラーが発生:`, sendError);
+          }
+        } else if (sendNotification && isOAuthConfigured && !liveChatId) {
+          console.warn(`[AutoExit] liveChatIdが取得できなかったため、座席(${position})の自動退室通知をスキップしました。`);
         }
         
         results.processedCount++;

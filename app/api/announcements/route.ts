@@ -22,7 +22,7 @@ export async function GET() {
     const announcements = await announcementsCollection
       .find()
       .sort({ createdAt: -1 }) // 最新のものを上に
-      .limit(20)
+      .limit(10)
       .toArray();
 
     return NextResponse.json(announcements);

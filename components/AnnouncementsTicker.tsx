@@ -21,7 +21,7 @@ const fetcher = (url: string) => fetch(url).then(res => res.json());
 
 export default function AnnouncementsTicker() {
   const { data: announcements, error } = useSWR<Announcement[]>('/api/announcements', fetcher, {
-    refreshInterval: 60000 // 60秒ごとに再取得 (適宜調整)
+    refreshInterval: 10000 // 60秒ごとに再取得 (適宜調整)
   });
   const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -30,12 +30,20 @@ export default function AnnouncementsTicker() {
     if (!announcements || announcements.length === 0) return;
 
     const intervalId = setInterval(() => {
-      setCurrentIndex((prevIndex) => (prevIndex + 1) % announcements.length);
+      setCurrentIndex((prevIndex) => {
+        if (prevIndex + 1 >= announcements.length) {
+          // 最後まで行ったら最初に戻る
+          return 0;
+        } else {
+          // 次へ進む
+          return prevIndex + 1;
+        }
+      });
     }, 5000); // 切り替え間隔（ミリ秒）
 
     return () => clearInterval(intervalId);
   }, [announcements]);
-
+  console.log("currentIndex",currentIndex);
   if (error) {
     console.error("Error fetching announcements:", error);
     // エラー時の表示を半透明に変更
