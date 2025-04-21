@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 // CommonJS形式のライブラリをインポート
-import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube';
+// import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube'; // youtubeApiClient を使うので不要
 import { detectCommand } from '@/lib/utils';
 import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
-import { youtubeApiClient } from '@/lib/youtubeApiClient';
+import { youtubeApiClient, YouTubeAPIError } from '@/lib/youtubeApiClient'; // エラークラスもインポート
 
 // このAPIルートを動的に処理するための設定
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+// キャッシュの有効期間 (例: 30日)
+const CACHE_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30日 * 24時間 * 60分 * 60秒 * 1000ミリ秒
 
 // エラーバックオフのための状態管理
 const errorState = {
@@ -36,6 +39,72 @@ interface ChatItem {
   };
 }
 
+// ChatResponse の型定義（youtubeApiClient から取得するデータの型に合わせる）
+interface ChatResponse {
+  items: ChatItem[];
+  nextPageToken?: string; // オプショナルに変更
+  pollingIntervalMillis?: number; // オプショナルに変更
+  error?: string; // エラー情報
+  backoff?: boolean; // バックオフ指示
+  remainingSeconds?: number; // バックオフ秒数
+  commands?: any[]; // コマンド情報 (今回はここで生成)
+}
+
+
+/**
+ * MongoDBから liveChatId を取得するヘルパー関数
+ */
+async function getCachedLiveChatId(videoId: string): Promise<string | null> {
+  try {
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    const cacheCollection = db.collection('liveChatIdCache');
+    // TTLインデックスが存在するか確認し、なければ作成 (6時間後に自動削除)
+    const indexes = await cacheCollection.indexInformation();
+    if (!indexes.expiresAt_1) {
+        await cacheCollection.createIndex({ expiresAt: 1 }, { 
+            expireAfterSeconds: 0, // ドキュメントの expiresAt フィールドの値で制御
+            name: 'expiresAt_1' 
+        });
+        console.log('[Comments API] liveChatIdCache のTTLインデックスを作成しました');
+    }
+
+    const cacheEntry = await cacheCollection.findOne({ videoId });
+
+    if (cacheEntry && cacheEntry.liveChatId && cacheEntry.expiresAt && new Date(cacheEntry.expiresAt) > new Date()) {
+      console.log(`[Comments API] liveChatId キャッシュヒット (videoId: ${videoId})`);
+      return cacheEntry.liveChatId;
+    }
+    console.log(`[Comments API] liveChatId キャッシュミスまたは期限切れ (videoId: ${videoId})`);
+    return null;
+  } catch (error) {
+    console.error('[Comments API] liveChatId キャッシュ取得/インデックス作成エラー:', error);
+    return null; // キャッシュエラー時はAPIから取得を試みる
+  }
+}
+
+/**
+ * MongoDBに liveChatId をキャッシュするヘルパー関数
+ */
+async function cacheLiveChatId(videoId: string, liveChatId: string): Promise<void> {
+  try {
+    const client = await clientPromise;
+    const db = client.db('coworking');
+    const cacheCollection = db.collection('liveChatIdCache');
+    const expiresAt = new Date(Date.now() + CACHE_DURATION_MS);
+
+    await cacheCollection.updateOne(
+      { videoId },
+      { $set: { liveChatId, expiresAt, updatedAt: new Date() } },
+      { upsert: true } // なければ挿入、あれば更新
+    );
+    console.log(`[Comments API] liveChatId をキャッシュしました (videoId: ${videoId}, expiresAt: ${expiresAt.toISOString()})`);
+  } catch (error) {
+    console.error('[Comments API] liveChatId キャッシュ保存エラー:', error);
+  }
+}
+
+
 /**
  * YouTubeライブコメント取得API
  * コメント取得のみを担当し、コマンド実行（DB更新）は行わない
@@ -47,7 +116,7 @@ export async function GET(request: Request) {
     if (now < errorState.backoffUntil) {
       const remainingSeconds = Math.ceil((errorState.backoffUntil - now) / 1000);
       console.log(`[Comments API] APIリクエスト抑制中 (残り${remainingSeconds}秒)`);
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: `APIクォータ超過のため一時的に利用できません。(残り${remainingSeconds}秒)`,
         commands: [],
         backoff: true,
@@ -58,73 +127,121 @@ export async function GET(request: Request) {
     // クエリパラメータからvideoIdを取得
     const { searchParams } = new URL(request.url);
     const videoId = searchParams.get('videoId') || process.env.YOUTUBE_VIDEO_ID;
-    
+
     // BOTのチャンネルID（環境変数から取得または直接指定）
     const botChannelId = process.env.YOUTUBE_BOT_CHANNEL_ID || '';
     const adminChannelId = process.env.ADMIN_YOUTUBE_CHANNEL_ID; // 運営者IDを取得
-    
+
     // videoIdチェック
     if (!videoId) {
       console.log('[Comments API] videoIdが指定されていません');
-      return NextResponse.json({ 
-        error: 'YouTube動画IDを入力してください', 
-        commands: [] 
+      return NextResponse.json({
+        error: 'YouTube動画IDを入力してください',
+        commands: []
       }, { status: 400 });
     }
-    
-    // ページトークンをクエリから取得（初回は undefined）
-    const pageToken = undefined; // 型エラー回避のためnull→undefined
-    
-    // コメントデータを取得
-    let chatData;
+
+    // ページトークンは現在使用していない
+    const pageToken = undefined; // 型エラー回避のため
+
+    let liveChatId: string | null = null;
+    let chatData: ChatResponse | null = null; // 初期値をnullに
+
     try {
-      const liveChatId = await youtubeApiClient.getLiveChatId(videoId);
+      // 1. キャッシュから liveChatId を取得
+      liveChatId = await getCachedLiveChatId(videoId);
+
+      // 2. キャッシュがない場合、APIから取得してキャッシュする
+      if (!liveChatId) {
+        console.log(`[Comments API] APIから liveChatId を取得します (videoId: ${videoId})`);
+        // API Client 側のキャッシュも効くが、ここで明示的にキャッシュする
+        liveChatId = await youtubeApiClient.getLiveChatId(videoId);
+        if (liveChatId) { // 取得成功時のみキャッシュ
+            await cacheLiveChatId(videoId, liveChatId); // MongoDBにキャッシュ
+        } else {
+            // youtubeApiClient.getLiveChatId がエラーを投げなかったが ID を返さなかった場合
+            // （通常はエラーがスローされるはずだが念のため）
+            throw new YouTubeAPIError(`liveChatId が取得できませんでした (videoId: ${videoId})`, 500, 'FETCH_FAILED');
+        }
+      }
+
+      // 3. liveChatId を使ってメッセージを取得
+      // youtubeApiClient.getLiveChatMessages が ChatResponse 型を返すように期待
       chatData = await youtubeApiClient.getLiveChatMessages(liveChatId, pageToken);
-      
+
       // 成功したらエラーカウントをリセット
       errorState.consecutiveErrors = 0;
+      // 成功したらクォータ超過状態もリセット
+      if(errorState.quotaExceeded) {
+          errorState.quotaExceeded = false;
+          console.log("[Comments API] クォータ超過状態をリセットしました。");
+      }
+
     } catch (error: any) {
-      console.error('[Comments API] コメント取得エラー:', error);
-      
-      // クォータ超過エラーの場合
-      if (error?.message?.includes('quota') || error?.response?.status === 403 || 
-          error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded') {
-        
+      console.error('[Comments API] コメントまたはliveChatId取得エラー:', error);
+
+      // liveChatId が見つからないエラー (404 Not Found またはカスタムエラー)
+      if (error instanceof YouTubeAPIError && (error.status === 404 || error.code === 'NOT_FOUND' || error.code === 'NOT_FOUND_NEGATIVE_CACHE')) {
+         // youtubeApiClient側でNegative Cacheされるため、ここでは404を返すのみ
+         return NextResponse.json({ error: error.message || 'ライブチャットが見つかりません。動画IDや配信状況を確認してください。', commands: [] }, { status: 404 });
+      }
+
+      // クォータ超過エラー
+      if (error?.message?.includes('quota') || error?.response?.status === 403 ||
+          error?.response?.data?.error?.errors?.[0]?.reason === 'quotaExceeded' ||
+          (error instanceof YouTubeAPIError && error.status === 403)) { // APIクライアントからのエラーも考慮
+
         errorState.quotaExceeded = true;
         errorState.lastErrorTime = now;
-        
+
         // 最初のクォータエラーなら10分、2回目以降なら30分のバックオフ
         const backoffTime = errorState.consecutiveErrors > 0 ? 30 * 60 * 1000 : 10 * 60 * 1000;
         errorState.backoffUntil = now + backoffTime;
-        errorState.consecutiveErrors++;
-        
+        errorState.consecutiveErrors++; // エラーカウント増加
+
+        const remainingSeconds = Math.ceil(backoffTime / 1000);
         console.log(`[Comments API] APIクォータ超過を検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-        
-        return NextResponse.json({ 
+
+        return NextResponse.json({
           error: `YouTube APIのクォータ制限を超過しました。${backoffTime / 60000}分後に再試行してください。`,
           commands: [],
-          backoff: true
+          backoff: true,
+          remainingSeconds
         }, { status: 429 });
       }
-      
+
       // その他のエラーの場合
       errorState.consecutiveErrors++;
-      
+
       // 連続エラーが続く場合はバックオフを設定
       if (errorState.consecutiveErrors > 3) {
-        const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
+        // 指数バックオフ（最大5分）
+        const backoffTime = Math.min(Math.pow(2, errorState.consecutiveErrors) * 1000, 5 * 60 * 1000);
         errorState.backoffUntil = now + backoffTime;
-        
-        return NextResponse.json({ 
+        const remainingSeconds = Math.ceil(backoffTime / 1000);
+
+        console.log(`[Comments API] ${errorState.consecutiveErrors}回連続エラー。${backoffTime / 60000}分間バックオフします`);
+
+        return NextResponse.json({
           error: `YouTube APIに接続できません。${backoffTime / 60000}分後に再試行してください。`,
           commands: [],
-          backoff: true
-        }, { status: 503 });
+          backoff: true,
+          remainingSeconds
+        }, { status: 503 }); // Service Unavailable
       }
-      
-      return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
+
+      // 上記以外の予期せぬエラー
+      const errorMessage = error instanceof Error ? error.message : 'コメントの取得中に不明なエラーが発生しました';
+      return NextResponse.json({ error: errorMessage, commands: [] }, { status: 500 });
     }
-    
+
+    // chatData が null または items がない場合はエラーレスポンス（取得失敗）
+    if (!chatData || !chatData.items) {
+        console.warn('[Comments API] chatData または chatData.items が存在しませんでした。');
+        return NextResponse.json({ error: 'コメントデータの取得に失敗しました。', commands: [] }, { status: 500 });
+    }
+
+
     // 検出済みコマンドの配列を準備
     const detectedCommands = [];
     const client = await clientPromise; // MongoDBクライアントを取得
@@ -136,7 +253,7 @@ export async function GET(request: Request) {
     try {
       const indexes = await processedCommentsCollection.indexInformation();
       if (!indexes.processedAt_1) {
-        await processedCommentsCollection.createIndex({ processedAt: 1 }, { 
+        await processedCommentsCollection.createIndex({ processedAt: 1 }, {
           expireAfterSeconds: 604800, // 1週間
           name: 'processedAt_1'
         });
@@ -150,43 +267,47 @@ export async function GET(request: Request) {
     // コメントごとにコマンド検出を行う
     for (const item of chatData.items || []) {
       const commentId = item.id;
-      console.log('[Comments API] コメントID:', commentId);
+      // console.log('[Comments API] コメントID:', commentId); // 必要なら有効化
       const commentText = item.snippet?.displayMessage || '';
       const publishedAt = item.snippet?.publishedAt; // YouTube上の公開日時
-      
+
       // API構造に応じて投稿者情報を取得（snippetとauthorDetailsの両方をチェック）
       const authorName = item.snippet?.authorDisplayName || item.authorDetails?.displayName;
       const authorId = (item.snippet?.authorChannelId?.value) || item.authorDetails?.channelId;
       const profileImageUrl = item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl;
-      
+
       // 以下の条件でコメント処理をスキップ
       // 1. 投稿者情報がない
       // 2. 既に処理済みのコメント
       // 3. BOT自身の投稿
       if (!authorName || !authorId) continue; // 投稿者情報がない場合はスキップ
-      
+
       // MongoDB で処理済みコメントをチェック
       const processedComment = await processedCommentsCollection.findOne({ commentId });
       if (processedComment) {
-        console.log(`[Comments API] スキップ: 既に処理済みのコメント (ID: ${commentId})`);
+        // console.log(`[Comments API] スキップ: 既に処理済みのコメント (ID: ${commentId})`); // 必要なら有効化
         continue;
       }
-      
+
       if (botChannelId && authorId === botChannelId) {
         console.log(`[Comments API] スキップ: BOT自身の投稿 (ID: ${commentId})`);
         // BOT自身の投稿はDBに追加して今後処理しないようにする
-        await processedCommentsCollection.insertOne({
-          commentId,
-          authorId,
-          isBot: true,
-          processedAt: new Date()
-        });
+        try {
+            await processedCommentsCollection.insertOne({
+              commentId,
+              authorId,
+              isBot: true,
+              processedAt: new Date()
+            });
+        } catch (dbError) {
+            console.error('[Comments API] BOTコメントのDB保存エラー:', dbError);
+        }
         continue;
       }
-      
+
       console.log(`[Comments API] コメント検出: ${authorName} - ${commentText}`);
       // console.log(`[Comments API] プロフィール画像URL: ${profileImageUrl}`); // 必要ならログ出力
-      
+
       // ★★★ 運営者コメントか判定 ★★★
       if (adminChannelId && authorId === adminChannelId) {
         console.log(`[Comments API] お知らせコメント検出: ${authorName} - ${commentText}`);
@@ -197,7 +318,8 @@ export async function GET(request: Request) {
             authorChannelId: authorId
           });
           if (existingAnnouncement) {
-            console.log(`[Comments API] 重複コメント: ${commentText}`);
+            console.log(`[Comments API] 重複お知らせコメント: ${commentText}`);
+            // 重複は処理済みDBには入れない（再投稿の可能性があるため）
             continue; // 重複コメントはスキップ
           }
           // お知らせをDBに保存
@@ -210,8 +332,8 @@ export async function GET(request: Request) {
             createdAt: new Date(), // サーバーでの保存日時
           });
           console.log(`[Comments API] お知らせをDBに保存しました: ${commentText}`);
-          
-          // 処理済みとしてDBに保存
+
+          // お知らせも処理済みとしてDBに保存 (将来的な重複処理を防ぐ)
           await processedCommentsCollection.insertOne({
             commentId,
             authorId,
@@ -226,10 +348,10 @@ export async function GET(request: Request) {
         continue; // 次のコメントへ
       }
 
-      // --- 運営者コメントでない場合の処理 ---
+      // --- 運営者コメントでない場合の処理 ---\
       // コマンド検出
       const { command, taskName } = detectCommand(commentText);
-      
+
       if (command) {
         // コマンドを検出した場合、コマンド情報を配列に追加
         detectedCommands.push({
@@ -241,58 +363,50 @@ export async function GET(request: Request) {
           commentText,
           profileImageUrl
         });
-        
+
         console.log(`[Comments API] コマンド検出: ${command} by ${authorName} (${taskName || 'タスクなし'})`);
-        
+
         // 処理済みとしてDBに保存
-        await processedCommentsCollection.insertOne({
-          commentId,
-          authorId,
-          command,
-          taskName,
-          processedAt: new Date()
-        });
+        try {
+            await processedCommentsCollection.insertOne({
+              commentId,
+              authorId,
+              commandDetected: command,
+              processedAt: new Date()
+            });
+        } catch (dbError) {
+            console.error('[Comments API] 処理済みコマンドのDB保存エラー:', dbError);
+        }
+      } else {
+        // コマンドが含まれないコメントも処理済みとして記録（ただしDB負荷を考慮しオプション）
+         try {
+             await processedCommentsCollection.insertOne({
+               commentId,
+               authorId,
+               processedAt: new Date()
+             });
+         } catch (dbError) {
+             console.error('[Comments API] 処理済みコメント(コマンドなし)のDB保存エラー:', dbError);
+         }
       }
-      // コマンドがない通常のコメントは処理しない（必要に応じてここで処理を追加）
-    }
-    
-    // コメントデータを整形 (UI表示用)
-    const comments = chatData.items?.map((item: ChatItem) => ({
-      id: item.id,
-      author: item.snippet?.authorDisplayName || item.authorDetails?.displayName || '不明なユーザー',
-      profileImageUrl: item.snippet?.authorPhotoUrl || item.authorDetails?.profileImageUrl,
-      text: item.snippet?.displayMessage || '',
-      publishedAt: item.snippet?.publishedAt
-    })) || [];
-    
+    } // end of for loop
+
+    // レスポンスを返す
     return NextResponse.json({
-      comments,
       commands: detectedCommands,
-      nextPageToken: chatData.nextPageToken,
-      pollingIntervalMillis: chatData.pollingIntervalMillis || 5000
+      pollingIntervalMillis: chatData.pollingIntervalMillis || 10000, // デフォルト10秒
+      nextPageToken: chatData.nextPageToken, // ページネーショントークンも返す
+      backoff: false // 成功時は backoff: false
     });
-    
+
   } catch (error) {
-    console.error('[Comments API] YouTube API エラー:', error);
-    
-    // エラーカウントを増やす
-    errorState.consecutiveErrors++;
-    
-    // 連続エラーが多い場合はバックオフを設定
-    if (errorState.consecutiveErrors > 3) {
-      const now = Date.now();
-      const backoffTime = Math.min(errorState.consecutiveErrors * 60 * 1000, 5 * 60 * 1000); // 最大5分
-      errorState.backoffUntil = now + backoffTime;
-      
-      console.log(`[Comments API] 連続エラーを検出しました。${backoffTime / 60000}分間APIリクエストを抑制します`);
-      
-      return NextResponse.json({ 
-        error: `サービスが一時的に利用できません。${backoffTime / 60000}分後に再試行してください。`,
-        commands: [],
-        backoff: true
-      }, { status: 503 });
-    }
-    
-    return NextResponse.json({ error: 'コメントの取得に失敗しました' }, { status: 500 });
+      console.error('[Comments API] 予期せぬエラー:', error);
+      // 想定外のエラーが発生した場合
+      return NextResponse.json({
+          error: 'サーバー内部で予期せぬエラーが発生しました',
+          commands: [],
+          backoff: true, // 念のためバックオフを推奨
+          remainingSeconds: 60 // 1分
+      }, { status: 500 });
   }
 } 
