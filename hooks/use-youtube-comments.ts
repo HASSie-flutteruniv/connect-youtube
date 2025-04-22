@@ -38,7 +38,7 @@ export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): Use
   const backoffStateRef = useRef({
     isActive: false,
     endTime: 0,
-    pollingInterval: 10000 // 初期値10秒
+    pollingInterval: 30000 // 初期値30秒
   });
   
   /**
@@ -98,7 +98,7 @@ export function useYouTubeComments(options: UseYouTubeCommentsOptions = {}): Use
       
       // APIからの推奨ポーリング間隔があれば使用
       if (response.pollingIntervalMillis && response.pollingIntervalMillis > 0) {
-        backoffStateRef.current.pollingInterval = Math.max(5000, response.pollingIntervalMillis);
+        backoffStateRef.current.pollingInterval = Math.max(30000, response.pollingIntervalMillis);
         console.log(`[YouTubeComments] ポーリング間隔を ${backoffStateRef.current.pollingInterval / 1000} 秒に調整`);
       }
       
