@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
-import { processYouTubeComment } from '@/lib/youtube';
+import { processYouTubeComment } from '@/lib/commandProcessor';
 
 interface YouTubeCommentRequest {
   comment: string;

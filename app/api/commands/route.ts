@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
-import { processCommand } from '@/lib/youtube';
+import { processCommand } from '@/lib/commandProcessor';
 
 interface CommandRequest {
   command: string;

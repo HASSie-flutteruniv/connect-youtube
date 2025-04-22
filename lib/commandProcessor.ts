@@ -1,190 +1,7 @@
-import { google, youtube_v3 } from 'googleapis';
 import { Db } from 'mongodb';
 import { messageTemplates } from './messages';
 import { scheduleAutoExit } from './autoExit';
 import { youtubeApiClient } from './youtubeApiClient';
-
-if (!process.env.YOUTUBE_API_KEY) {
-  throw new Error('Missing YOUTUBE_API_KEY environment variable');
-}
-
-// YouTube API の型定義
-export interface Author {
-  displayName: string;
-  profileImageUrl: string;
-  channelId: string;
-}
-
-export interface MessageSnippet {
-  displayMessage: string;
-  publishedAt: string;
-  authorDisplayName?: string;
-  authorPhotoUrl?: string;
-  authorChannelId?: {
-    value?: string;
-  };
-}
-
-export interface ChatItem {
-  id: string;
-  snippet: MessageSnippet;
-  authorDetails: Author;
-}
-
-export interface ChatResponse {
-  items: ChatItem[];
-  nextPageToken: string;
-  pollingIntervalMillis: number;
-}
-
-// API リクエストエラーの型
-export class YouTubeAPIError extends Error {
-  status?: number;
-  code?: string;
-  
-  constructor(message: string, status?: number, code?: string) {
-    super(message);
-    this.name = 'YouTubeAPIError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-// API Keyを使ったYouTube APIの初期化
-const youtubeWithApiKey = google.youtube({
-  version: 'v3',
-  auth: process.env.YOUTUBE_API_KEY
-});
-
-// OAuth2クライアントの設定（OAuth認証が設定されている場合のみ使用）
-let oauth2Client: any;
-let youtubeWithOAuth: youtube_v3.Youtube | null = null;
-
-if (process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET && process.env.YOUTUBE_REDIRECT_URL) {
-  oauth2Client = new google.auth.OAuth2(
-    process.env.YOUTUBE_CLIENT_ID,
-    process.env.YOUTUBE_CLIENT_SECRET,
-    process.env.YOUTUBE_REDIRECT_URL
-  );
-
-  // リフレッシュトークンの設定（存在する場合）
-  if (process.env.YOUTUBE_REFRESH_TOKEN) {
-    oauth2Client.setCredentials({
-      refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
-    });
-  }
-
-  // OAuth2認証を使用したYouTube APIの初期化
-  youtubeWithOAuth = google.youtube({
-    version: 'v3',
-    auth: oauth2Client
-  });
-}
-
-/**
- * ライブチャットIDを取得する（API Keyのみで実行可能）
- * @param videoId 動画ID
- * @returns ライブチャットID
- */
-export async function getLiveChatId(videoId: string): Promise<string> {
-  try {
-    const response = await youtubeWithApiKey.videos.list({
-      part: ['liveStreamingDetails'],
-      id: [videoId]
-    });
-
-    const video = response.data.items && response.data.items[0];
-    if (!video || !video.liveStreamingDetails || !video.liveStreamingDetails.activeLiveChatId) {
-      throw new Error('ライブチャットIDが見つかりませんでした');
-    }
-
-    return video.liveStreamingDetails.activeLiveChatId;
-  } catch (error) {
-    console.error('ライブチャットID取得エラー:', error);
-    throw new Error('ライブチャットIDの取得に失敗しました');
-  }
-}
-
-/**
- * YouTubeのライブチャットにメッセージを送信する（OAuth2認証が必要）
- * @param liveChatId ライブチャットID
- * @param message 送信するメッセージ
- * @returns 送信結果
- */
-export async function sendChatMessage(liveChatId: string, message: string) {
-  try {
-    // OAuth2認証が設定されていない場合はログのみ出力
-    if (!youtubeWithOAuth) {
-      console.log('OAuth2認証が設定されていないため、メッセージ送信をスキップします:', message);
-      return { success: false, message: 'OAuth2認証が設定されていません' };
-    }
-
-    const response = await youtubeWithOAuth.liveChatMessages.insert({
-      part: ['snippet'],
-      requestBody: {
-        snippet: {
-          liveChatId: liveChatId,
-          type: 'textMessageEvent',
-          textMessageDetails: {
-            messageText: message
-          }
-        }
-      }
-    });
-
-    console.log('メッセージ送信成功:', message);
-    return response.data;
-  } catch (error) {
-    console.error('メッセージ送信エラー:', error);
-    throw new Error('メッセージの送信に失敗しました');
-  }
-}
-
-/**
- * ライブチャットのメッセージを取得する（API Keyのみで実行可能）
- * @param liveChatId ライブチャットID
- * @param pageToken ページトークン（続きを取得する場合）
- * @returns チャットメッセージのレスポンス
- */
-export async function getLiveChatMessages(liveChatId: string, pageToken: string | null): Promise<ChatResponse> {
-  try {
-    // API呼び出しでsnippetとauthorDetailsの両方を取得
-    const response = await youtubeWithApiKey.liveChatMessages.list({
-      part: ['snippet', 'authorDetails'],
-      liveChatId,
-      pageToken: pageToken || undefined,
-      maxResults: 100
-    });
-    
-    console.log(`[YouTube API] コメント取得: ${response.data.items?.length || 0}件`);
-    
-    // デバッグのため最初のコメントの構造を出力
-    if (response.data.items && response.data.items.length > 0) {
-      const firstItem = response.data.items[0];
-      console.log('[YouTube API] コメント構造サンプル:', 
-        JSON.stringify({
-          id: firstItem.id,
-          snippet: firstItem.snippet,
-          authorDetails: firstItem.authorDetails
-        }, null, 2).substring(0, 500) + '...');
-    }
-    
-    return response.data as ChatResponse;
-  } catch (error: any) {
-    console.error('Error getting live chat messages:', error?.response?.data || error);
-    throw new YouTubeAPIError(
-      `Failed to get live chat messages: ${error?.message || 'Unknown error'}`,
-      error?.response?.status,
-      error?.code
-    );
-  }
-}
-
-/**
- * キャッシュされたライブチャットIDを保持するオブジェクト
- * メモリ内キャッシュとして機能（サーバー再起動でリセット）
- */
-export const liveChatIdCache: Record<string, string> = {};
 
 // プロフィール画像URLを検証する関数
 function isValidImageUrl(url?: string | null): boolean {
@@ -287,7 +104,7 @@ export async function processCommand(
   // ライブチャットIDが指定されていない場合で、videoIdが指定されている場合、取得を試みる
   if (!liveChatId && videoId) {
     try {
-      liveChatId = await getLiveChatId(videoId);
+      liveChatId = await youtubeApiClient.getLiveChatId(videoId);
     } catch (error) {
       console.warn('[Command] Failed to get liveChatId, notifications will be disabled:', error);
       // 通知は送れなくても処理は続行
@@ -295,7 +112,7 @@ export async function processCommand(
   }
   
   // OAuth認証が設定されているかをチェック
-  const isOAuthConfigured = !!youtubeWithOAuth;
+  const isOAuthConfigured = youtubeApiClient.isOAuthConfigured();
   
   // システムメッセージをMongoDBに保存する関数（SSEで検知される）
   const saveSystemMessage = async (message: string, type: 'info' | 'warning' | 'error' = 'info') => {
@@ -335,7 +152,7 @@ export async function processCommand(
     console.log(`[Command] Existing seat task: ${existingSeat?.task}`);
     console.log(`[Command] Task name: ${taskName}`);
     if (existingSeat && existingSeat.task === taskName) {
-      console.log(`[Command] Task name has changed from ${existingSeat.task} to ${taskName}`);
+      console.log(`[Command] Task has not changed: ${taskName}`);
       return {
         success: true,
         action: 'update',
@@ -451,7 +268,7 @@ export async function processCommand(
     // 入室メッセージを送信（OAuth認証が設定されている場合のみ）
     if (liveChatId && isOAuthConfigured) {
       try {
-        await sendChatMessage(
+        await youtubeApiClient.sendChatMessage(
           liveChatId, 
           messageTemplates.seatTaken(username, 'focus-room', newPosition, taskName)
         );
@@ -503,7 +320,7 @@ export async function processCommand(
         // 退室メッセージを送信（OAuth認証が設定されている場合のみ）
         if (liveChatId && isOAuthConfigured) {
           try {
-            await sendChatMessage(
+            await youtubeApiClient.sendChatMessage(
               liveChatId, 
               messageTemplates.seatVacated(username, 'focus-room', result.value.position)
             );
@@ -542,4 +359,4 @@ export async function processCommand(
     console.log(`[Command] Unsupported command: ${command}`);
     throw new Error('対応していないコマンドです');
   }
-}
+} 

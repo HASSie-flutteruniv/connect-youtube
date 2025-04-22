@@ -1,5 +1,6 @@
 import { google, youtube_v3 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
+import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
 
 export class YouTubeAPIError extends Error {
   status?: number;
@@ -46,8 +47,9 @@ class YouTubeApiClient {
   private oauth2Client: OAuth2Client | null = null;
   private liveChatIdCache: Record<string, { id: string; timestamp: number }> = {};
   private negativeCache: Record<string, { timestamp: number }> = {}; // Negative Cache用
-  private cacheDurationMs: number = 60 * 60 * 1000; // 成功キャッシュ: 1時間
-  private negativeCacheDurationMs: number = 30 * 60 * 1000; // 失敗キャッシュ: 30分
+  private cacheDurationMs: number = 60 * 60 * 1000; // 成功メモリキャッシュ: 1時間
+  private negativeCacheDurationMs: number = 30 * 60 * 1000; // 失敗メモリキャッシュ: 30分
+  private dbCacheDurationMs: number = 6 * 60 * 60 * 1000; // DBキャッシュ: 6時間 (APIルート側のTTLインデックス設定に合わせる)
 
   constructor() {
     if (!process.env.YOUTUBE_API_KEY) {
@@ -75,25 +77,99 @@ class YouTubeApiClient {
     }
   }
 
+  /**
+   * MongoDBから liveChatId を取得するヘルパー関数
+   */
+  private async getCachedLiveChatIdFromDb(videoId: string): Promise<string | null> {
+    try {
+      const client = await clientPromise;
+      const db = client.db('coworking');
+      const cacheCollection = db.collection('liveChatIdCache');
+      // TTLインデックスが存在するか確認し、なければ作成 (DB側で expiresAt を見て削除)
+      const indexes = await cacheCollection.indexInformation();
+      if (!indexes.expiresAt_1) {
+          try {
+              await cacheCollection.createIndex({ expiresAt: 1 }, {
+                  expireAfterSeconds: 0, // ドキュメントの expiresAt フィールドの値で制御
+                  name: 'expiresAt_1'
+              });
+              console.log('[YouTubeApiClient] liveChatIdCache のTTLインデックスを作成しました');
+          } catch (indexError: any) {
+              // インデックス作成中の競合エラーは無視しても問題ない場合が多い
+              if (indexError.codeName === 'IndexOptionsConflict' || indexError.codeName === 'IndexKeySpecsConflict') {
+                  console.warn('[YouTubeApiClient] TTLインデックスは既に存在するようです:', indexError.codeName);
+              } else {
+                  throw indexError; // その他のエラーは再スロー
+              }
+          }
+      }
+
+      const cacheEntry = await cacheCollection.findOne({ videoId });
+
+      if (cacheEntry && cacheEntry.liveChatId && cacheEntry.expiresAt && new Date(cacheEntry.expiresAt) > new Date()) {
+        console.log(`[YouTubeApiClient] DB Cache hit for liveChatId (videoId: ${videoId})`);
+        // DBキャッシュヒット時、メモリキャッシュも更新（有効期限はDBに合わせる）
+        this.liveChatIdCache[videoId] = { id: cacheEntry.liveChatId, timestamp: new Date(cacheEntry.expiresAt).getTime() - this.dbCacheDurationMs };
+        return cacheEntry.liveChatId;
+      }
+      console.log(`[YouTubeApiClient] DB Cache miss or expired (videoId: ${videoId})`);
+      return null;
+    } catch (error) {
+      console.error('[YouTubeApiClient] liveChatId DBキャッシュ取得/インデックス作成エラー:', error);
+      return null; // DBエラー時はAPIから取得を試みる
+    }
+  }
+
+  /**
+   * MongoDBに liveChatId をキャッシュするヘルパー関数
+   */
+  private async cacheLiveChatIdToDb(videoId: string, liveChatId: string): Promise<void> {
+    try {
+      const client = await clientPromise;
+      const db = client.db('coworking');
+      const cacheCollection = db.collection('liveChatIdCache');
+      const expiresAt = new Date(Date.now() + this.dbCacheDurationMs); // DBキャッシュの有効期限
+
+      await cacheCollection.updateOne(
+        { videoId },
+        { $set: { liveChatId, expiresAt, updatedAt: new Date() } },
+        { upsert: true } // なければ挿入、あれば更新
+      );
+      console.log(`[YouTubeApiClient] liveChatId をDBにキャッシュしました (videoId: ${videoId}, expiresAt: ${expiresAt.toISOString()})`);
+    } catch (error) {
+      console.error('[YouTubeApiClient] liveChatId DBキャッシュ保存エラー:', error);
+    }
+  }
+
   async getLiveChatId(videoId: string, forceRefresh: boolean = false): Promise<string> {
     const now = Date.now();
 
-    // 1. Negative Cache チェック (強制リフレッシュでない場合)
-    const negativeCached = this.negativeCache[videoId];
-    if (!forceRefresh && negativeCached && (now - negativeCached.timestamp < this.negativeCacheDurationMs)) {
-      console.log(`[YouTubeApiClient] Negative cache hit for videoId: ${videoId}. Skipping API call.`);
-      // Negative Cache ヒット時はエラーを再スローする（見つからないことを示す）
-      throw new YouTubeAPIError(`ライブチャットIDが見つかりません (Negative Cache)`, 404, 'NOT_FOUND_NEGATIVE_CACHE');
+    // --- キャッシュ確認フェーズ ---
+    if (!forceRefresh) {
+      // 1. MongoDBキャッシュを確認
+      const dbCachedId = await this.getCachedLiveChatIdFromDb(videoId);
+      if (dbCachedId) {
+        return dbCachedId;
+      }
+
+      // 2. Negative Cache (メモリ) を確認
+      const negativeCached = this.negativeCache[videoId];
+      if (negativeCached && (now - negativeCached.timestamp < this.negativeCacheDurationMs)) {
+        console.log(`[YouTubeApiClient] Negative cache hit (memory) for videoId: ${videoId}. Skipping API call.`);
+        throw new YouTubeAPIError(`ライブチャットIDが見つかりません (Negative Cache)`, 404, 'NOT_FOUND_NEGATIVE_CACHE');
+      }
+
+      // 3. Success Cache (メモリ) を確認
+      const cached = this.liveChatIdCache[videoId];
+      // メモリキャッシュの有効期限もチェック (DBキャッシュより短い可能性があるため)
+      if (cached && (now - cached.timestamp < this.cacheDurationMs)) {
+        console.log(`[YouTubeApiClient] Cache hit (memory) for liveChatId (videoId: ${videoId})`);
+        return cached.id;
+      }
     }
 
-    // 2. Success Cache チェック (強制リフレッシュでない場合)
-    const cached = this.liveChatIdCache[videoId];
-    if (!forceRefresh && cached && (now - cached.timestamp < this.cacheDurationMs)) {
-      console.log(`[YouTubeApiClient] Cache hit for liveChatId (videoId: ${videoId})`);
-      return cached.id;
-    }
-
-    console.log(`[YouTubeApiClient] Cache miss or expired/forced refresh for liveChatId (videoId: ${videoId}). Fetching from API...`);
+    // --- API取得フェーズ ---
+    console.log(`[YouTubeApiClient] All caches miss or expired/forced refresh for liveChatId (videoId: ${videoId}). Fetching from API...`);
 
     try {
       const response = await this.youtubeWithApiKey.videos.list({
@@ -105,20 +181,27 @@ class YouTubeApiClient {
       const liveChatId = video?.liveStreamingDetails?.activeLiveChatId;
 
       if (!liveChatId) {
-        console.warn(`[YouTubeApiClient] Live chat ID not found for video ${videoId}. Adding to negative cache.`);
-        // 見つからなかった場合は Negative Cache に記録
+        console.warn(`[YouTubeApiClient] Live chat ID not found via API for video ${videoId}. Adding to negative cache (memory).`);
+        // 見つからなかった場合は Negative Cache (メモリ) に記録 (DBには記録しない)
         this.negativeCache[videoId] = { timestamp: now };
-        // エラーをスローして、見つからなかったことを明確にする
+        // メモリのSuccess Cacheがあれば削除
+        if (this.liveChatIdCache[videoId]) {
+            delete this.liveChatIdCache[videoId];
+        }
         throw new YouTubeAPIError(`ライブチャットIDが見つかりませんでした。動画IDが正しいか、ライブ配信がアクティブか確認してください (videoId: ${videoId})`, 404, 'NOT_FOUND');
       }
 
-      // 成功した場合は Success Cache を更新し、Negative Cache があれば削除
+      // --- 成功時のキャッシュ更新 ---
+      console.log(`[YouTubeApiClient] Fetched liveChatId via API: ${liveChatId} (videoId: ${videoId}). Caching...`);
+      // 1. DBにキャッシュ
+      await this.cacheLiveChatIdToDb(videoId, liveChatId);
+      // 2. メモリキャッシュを更新 (DBキャッシュと同じタイミングで作成)
       this.liveChatIdCache[videoId] = { id: liveChatId, timestamp: now };
+      // 3. Negative Cache があれば削除
       if (this.negativeCache[videoId]) {
-        delete this.negativeCache[videoId]; // 成功したので Negative Cache は不要
-        console.log(`[YouTubeApiClient] Removed negative cache for videoId: ${videoId} after successful fetch.`);
+        delete this.negativeCache[videoId];
+        console.log(`[YouTubeApiClient] Removed negative cache (memory) for videoId: ${videoId} after successful fetch.`);
       }
-      console.log(`[YouTubeApiClient] Fetched and cached liveChatId: ${liveChatId} (videoId: ${videoId})`);
 
       return liveChatId;
     } catch (error: any) {
@@ -127,14 +210,19 @@ class YouTubeApiClient {
       const code = error?.code || (error instanceof YouTubeAPIError ? error.code : undefined);
       let message = error instanceof YouTubeAPIError ? error.message : `ライブチャットIDの取得中にエラーが発生しました: ${error?.message || 'Unknown error'}`;
 
-      // 404 Not Found の場合は Negative Cache に記録
-      if (status === 404 && code !== 'NOT_FOUND_NEGATIVE_CACHE') { // Negative Cache 起因のエラーは再キャッシュしない
-        console.warn(`[YouTubeApiClient] API returned 404 for videoId: ${videoId}. Adding/updating negative cache.`);
+      // 404 Not Found の場合は Negative Cache に記録 (メモリのみ)
+      if (status === 404 && code !== 'NOT_FOUND_NEGATIVE_CACHE') {
+        console.warn(`[YouTubeApiClient] API returned 404 for videoId: ${videoId}. Adding/updating negative cache (memory).`);
         this.negativeCache[videoId] = { timestamp: now };
-        message = `ライブチャットIDが見つかりませんでした (API 404)。動画IDを確認してください。`; // メッセージを具体的に
+         // メモリのSuccess Cacheがあれば削除
+        if (this.liveChatIdCache[videoId]) {
+            delete this.liveChatIdCache[videoId];
+        }
+        message = `ライブチャットIDが見つかりませんでした (API 404)。動画IDを確認してください。`;
       }
-      // クォータ超過などは Negative Cache には入れない（一時的な問題の可能性があるため）
+      // クォータ超過などは Negative Cache には入れない
 
+      // エラーをスローして呼び出し元で処理
       throw new YouTubeAPIError(message, status, code);
     }
   }

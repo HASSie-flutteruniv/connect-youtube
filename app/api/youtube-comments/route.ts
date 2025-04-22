@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 // CommonJS形式のライブラリをインポート
-// import { getLiveChatMessages, getLiveChatId } from '@/lib/youtube'; // youtubeApiClient を使うので不要
 import { detectCommand } from '@/lib/utils';
 import clientPromise from '@/lib/mongodb'; // MongoDBクライアントをインポート
 import { youtubeApiClient, YouTubeAPIError } from '@/lib/youtubeApiClient'; // エラークラスもインポート
@@ -50,61 +49,6 @@ interface ChatResponse {
   commands?: any[]; // コマンド情報 (今回はここで生成)
 }
 
-
-/**
- * MongoDBから liveChatId を取得するヘルパー関数
- */
-async function getCachedLiveChatId(videoId: string): Promise<string | null> {
-  try {
-    const client = await clientPromise;
-    const db = client.db('coworking');
-    const cacheCollection = db.collection('liveChatIdCache');
-    // TTLインデックスが存在するか確認し、なければ作成 (6時間後に自動削除)
-    const indexes = await cacheCollection.indexInformation();
-    if (!indexes.expiresAt_1) {
-        await cacheCollection.createIndex({ expiresAt: 1 }, { 
-            expireAfterSeconds: 0, // ドキュメントの expiresAt フィールドの値で制御
-            name: 'expiresAt_1' 
-        });
-        console.log('[Comments API] liveChatIdCache のTTLインデックスを作成しました');
-    }
-
-    const cacheEntry = await cacheCollection.findOne({ videoId });
-
-    if (cacheEntry && cacheEntry.liveChatId && cacheEntry.expiresAt && new Date(cacheEntry.expiresAt) > new Date()) {
-      console.log(`[Comments API] liveChatId キャッシュヒット (videoId: ${videoId})`);
-      return cacheEntry.liveChatId;
-    }
-    console.log(`[Comments API] liveChatId キャッシュミスまたは期限切れ (videoId: ${videoId})`);
-    return null;
-  } catch (error) {
-    console.error('[Comments API] liveChatId キャッシュ取得/インデックス作成エラー:', error);
-    return null; // キャッシュエラー時はAPIから取得を試みる
-  }
-}
-
-/**
- * MongoDBに liveChatId をキャッシュするヘルパー関数
- */
-async function cacheLiveChatId(videoId: string, liveChatId: string): Promise<void> {
-  try {
-    const client = await clientPromise;
-    const db = client.db('coworking');
-    const cacheCollection = db.collection('liveChatIdCache');
-    const expiresAt = new Date(Date.now() + CACHE_DURATION_MS);
-
-    await cacheCollection.updateOne(
-      { videoId },
-      { $set: { liveChatId, expiresAt, updatedAt: new Date() } },
-      { upsert: true } // なければ挿入、あれば更新
-    );
-    console.log(`[Comments API] liveChatId をキャッシュしました (videoId: ${videoId}, expiresAt: ${expiresAt.toISOString()})`);
-  } catch (error) {
-    console.error('[Comments API] liveChatId キャッシュ保存エラー:', error);
-  }
-}
-
-
 /**
  * YouTubeライブコメント取得API
  * コメント取得のみを担当し、コマンド実行（DB更新）は行わない
@@ -144,29 +88,15 @@ export async function GET(request: Request) {
     // ページトークンは現在使用していない
     const pageToken = undefined; // 型エラー回避のため
 
-    let liveChatId: string | null = null;
+    let liveChatId: string;
     let chatData: ChatResponse | null = null; // 初期値をnullに
 
     try {
-      // 1. キャッシュから liveChatId を取得
-      liveChatId = await getCachedLiveChatId(videoId);
+      // youtubeApiClientからliveChatIdを取得 (キャッシュ処理はApiClient内部で行われる)
+      console.log(`[Comments API] youtubeApiClientから liveChatId を取得します (videoId: ${videoId})`);
+      liveChatId = await youtubeApiClient.getLiveChatId(videoId);
 
-      // 2. キャッシュがない場合、APIから取得してキャッシュする
-      if (!liveChatId) {
-        console.log(`[Comments API] APIから liveChatId を取得します (videoId: ${videoId})`);
-        // API Client 側のキャッシュも効くが、ここで明示的にキャッシュする
-        liveChatId = await youtubeApiClient.getLiveChatId(videoId);
-        if (liveChatId) { // 取得成功時のみキャッシュ
-            await cacheLiveChatId(videoId, liveChatId); // MongoDBにキャッシュ
-        } else {
-            // youtubeApiClient.getLiveChatId がエラーを投げなかったが ID を返さなかった場合
-            // （通常はエラーがスローされるはずだが念のため）
-            throw new YouTubeAPIError(`liveChatId が取得できませんでした (videoId: ${videoId})`, 500, 'FETCH_FAILED');
-        }
-      }
-
-      // 3. liveChatId を使ってメッセージを取得
-      // youtubeApiClient.getLiveChatMessages が ChatResponse 型を返すように期待
+      // liveChatId を使ってメッセージを取得
       chatData = await youtubeApiClient.getLiveChatMessages(liveChatId, pageToken);
 
       // 成功したらエラーカウントをリセット
